@@ -9,9 +9,15 @@ const openOptionsButtonElement = document.getElementById("open-options");
 
 let model = null;
 
+/**
+ * Send a runtime message and return a Promise for UI-friendly async handling.
+ * @param {any} payload - Message or payload object exchanged between extension components.
+ * @returns {Promise<any>} Response payload from background script.
+ */
 function sendMessage(payload) {
   return new Promise((resolve, reject) => {
     chrome.runtime.sendMessage(payload, (response) => {
+      // Normalize callback-style Chrome APIs into Promise flow for predictable async UI updates.
       const runtimeError = chrome.runtime.lastError;
       if (runtimeError) {
         reject(new Error(runtimeError.message));
@@ -23,6 +29,12 @@ function sendMessage(payload) {
   });
 }
 
+/**
+ * Render one popup file row with toggle behavior bound to host settings.
+ * @param {any} file - Manifest or build file descriptor currently processed.
+ * @param {any} enabledFileIds - Enabled file IDs for the current host.
+ * @returns {HTMLElement} Popup row bound to one manifest file.
+ */
 function createFileRow(file, enabledFileIds) {
   const row = document.createElement("label");
   row.className = "file-row";
@@ -75,11 +87,21 @@ function createFileRow(file, enabledFileIds) {
   return row;
 }
 
+/**
+ * Render status text with error styling support.
+ * @param {any} message - Runtime message payload received from UI/content/background.
+ * @param {any} isError - True when status should be rendered with error styling.
+ * @returns {void} Updates status area content and error style.
+ */
 function setStatus(message, isError) {
   statusMessageElement.textContent = message;
   statusMessageElement.classList.toggle("status-error", isError);
 }
 
+/**
+ * Render popup/options UI from current model state.
+ * @returns {void} Renders current model into UI.
+ */
 function render() {
   if (!model) {
     return;
@@ -144,6 +166,10 @@ function render() {
   }
 }
 
+/**
+ * Refresh UI model from background script then re-render.
+ * @returns {Promise<void>} Fetches fresh model and triggers render.
+ */
 async function refreshModel() {
   try {
     const response = await sendMessage({ type: "POPUP_GET_MODEL" });

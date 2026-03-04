@@ -6,6 +6,11 @@
 
   const executedScriptHashes = new Map();
 
+  /**
+   * Compute a stable content hash used to skip redundant CSS/JS reinjection.
+   * @param {any} value - Raw value to sanitize or normalize before runtime usage.
+   * @returns {string} Stable hex hash used to detect content changes.
+   */
   function hashString(value) {
     let hash = 2166136261;
 
@@ -17,22 +22,48 @@
     return (hash >>> 0).toString(16);
   }
 
+  /**
+   * Find injected elements by marker attribute for cleanup/update operations.
+   * @param {any} attributeName - DOM attribute used as marker for injected assets.
+   * @returns {Element[]} Matching DOM nodes carrying the requested marker attribute.
+   */
   function queryByAttribute(attributeName) {
     return Array.from(document.querySelectorAll(`[${attributeName}]`));
   }
 
+  /**
+   * Return the preferred DOM root where injected style/script tags should be attached.
+   * @returns {HTMLElement|null} Preferred injection root in current document.
+   */
   function getRootNode() {
     return document.head || document.documentElement || document.body;
   }
 
+  /**
+   * Find a previously injected element by file id marker.
+   * @param {any} attributeName - DOM attribute used as marker for injected assets.
+   * @param {any} fileId - Stable manifest file identifier (type:path).
+   * @returns {Element|null} Previously injected node for a file id.
+   */
   function findById(attributeName, fileId) {
     return queryByAttribute(attributeName).find((element) => element.getAttribute(attributeName) === fileId) || null;
   }
 
+  /**
+   * Remove an injected script element from the page.
+   * @param {any} scriptElement - Injected script DOM element to remove.
+   * @returns {void} Removes the provided script node from DOM.
+   */
   function removeScriptElement(scriptElement) {
     scriptElement.remove();
   }
 
+  /**
+   * Append a cache-busting hash query parameter to force browser fetch refresh.
+   * @param {any} urlValue - URL-like value to parse or normalize.
+   * @param {any} contentHash - Hash used for cache-busting and change detection.
+   * @returns {string} URL with `mfci_hash` cache-busting query parameter.
+   */
   function appendHashToUrl(urlValue, contentHash) {
     try {
       const parsedUrl = new URL(urlValue, window.location.href);
@@ -43,6 +74,12 @@
     }
   }
 
+  /**
+   * Report JS injection errors back to background script for user-visible diagnostics.
+   * @param {any} fileId - Stable manifest file identifier (type:path).
+   * @param {any} errorMessage - Human-readable error description sent to background diagnostics.
+   * @returns {void} Best-effort error notification to background script.
+   */
   function notifyScriptError(fileId, errorMessage) {
     try {
       chrome.runtime.sendMessage({
@@ -55,6 +92,13 @@
     }
   }
 
+  /**
+   * Log extension events into page console for developer feedback during live editing.
+   * @param {any} level - Log severity level used by page console bridge.
+   * @param {any} message - Runtime message payload received from UI/content/background.
+   * @param {any} context - Structured log context appended to console events.
+   * @returns {void} Writes a formatted log event to page console.
+   */
   function logToPageConsole(level, message, context) {
     const method = level === "error" ? "error" : level === "warn" ? "warn" : "info";
     if (context && typeof context === "object") {
@@ -64,6 +108,11 @@
     console[method](message);
   }
 
+  /**
+   * Apply or refresh one CSS file in-place without full page reload.
+   * @param {any} file - Manifest or build file descriptor currently processed.
+   * @returns {void} Applies or refreshes one CSS file in DOM.
+   */
   function applyCssFile(file) {
     const rootNode = getRootNode();
     if (!rootNode) {
@@ -90,6 +139,11 @@
     }
   }
 
+  /**
+   * Inject one JS file as script tag and re-run only when content changed.
+   * @param {any} file - Manifest or build file descriptor currently processed.
+   * @returns {void} Injects one JS file in DOM when content changed.
+   */
   function executeJsFile(file) {
     const rootNode = getRootNode();
     if (!rootNode) {
@@ -103,6 +157,7 @@
       return;
     }
 
+    // Remove previous tag first to force browser re-evaluation when the content hash changes.
     removeJsFile(file.id);
 
     const scriptElement = document.createElement("script");
@@ -119,6 +174,7 @@
       return;
     }
 
+    // Use a real script URL (not inline text/blob) to stay compatible with strict CSP policies.
     scriptElement.src = appendHashToUrl(sourceUrl, contentHash);
     scriptElement.async = false;
 
@@ -135,6 +191,11 @@
     });
   }
 
+  /**
+   * Remove an injected CSS file by id.
+   * @param {any} fileId - Stable manifest file identifier (type:path).
+   * @returns {void} Removes one injected CSS node by id.
+   */
   function removeCssFile(fileId) {
     const styleElement = findById(STYLE_ATTR, fileId);
     if (styleElement) {
@@ -142,6 +203,11 @@
     }
   }
 
+  /**
+   * Remove an injected JS file by id and clear its execution hash.
+   * @param {any} fileId - Stable manifest file identifier (type:path).
+   * @returns {void} Removes injected JS nodes and execution cache for one id.
+   */
   function removeJsFile(fileId) {
     for (const scriptElement of queryByAttribute(SCRIPT_ATTR)) {
       if (scriptElement.getAttribute(SCRIPT_ATTR) !== fileId) {
@@ -154,6 +220,12 @@
     executedScriptHashes.delete(fileId);
   }
 
+  /**
+   * Remove stale injected assets no longer present in desired state.
+   * @param {any} desiredCssIds - Set of CSS file IDs that must remain injected.
+   * @param {any} desiredJsIds - Set of JS file IDs that must remain injected.
+   * @returns {void} Removes injected assets not present in desired sets.
+   */
   function cleanupFiles(desiredCssIds, desiredJsIds) {
     for (const styleElement of queryByAttribute(STYLE_ATTR)) {
       const fileId = styleElement.getAttribute(STYLE_ATTR);
@@ -171,6 +243,11 @@
     }
   }
 
+  /**
+   * Apply full desired file state sent by background script to the current page.
+   * @param {any} payload - Message or payload object exchanged between extension components.
+   * @returns {void} Applies background sync payload to current page DOM.
+   */
   function applyState(payload) {
     const files = Array.isArray(payload.files) ? payload.files : [];
 
@@ -182,6 +259,7 @@
         continue;
       }
 
+      // Keep desired IDs in sets first, then cleanup in one pass to avoid flickering removals.
       if (file.type === "css") {
         desiredCssIds.add(file.id);
         applyCssFile(file);

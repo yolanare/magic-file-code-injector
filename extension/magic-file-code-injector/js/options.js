@@ -7,9 +7,15 @@ const refreshOptionsElement = document.getElementById("refresh-options");
 
 let model = null;
 
+/**
+ * Send a runtime message and return a Promise for UI-friendly async handling.
+ * @param {any} payload - Message or payload object exchanged between extension components.
+ * @returns {Promise<any>} Response payload from background script.
+ */
 function sendMessage(payload) {
   return new Promise((resolve, reject) => {
     chrome.runtime.sendMessage(payload, (response) => {
+      // Normalize callback-style Chrome APIs into Promise flow for predictable async UI updates.
       const runtimeError = chrome.runtime.lastError;
       if (runtimeError) {
         reject(new Error(runtimeError.message));
@@ -21,11 +27,22 @@ function sendMessage(payload) {
   });
 }
 
+/**
+ * Render status text with error styling support.
+ * @param {any} message - Runtime message payload received from UI/content/background.
+ * @param {any} isError - True when status should be rendered with error styling.
+ * @returns {void} Updates status area content and error style.
+ */
 function setStatus(message, isError) {
   statusMessageElement.textContent = message;
   statusMessageElement.classList.toggle("status-error", isError);
 }
 
+/**
+ * Render the enabled-file list shown in options for one host.
+ * @param {any} enabledFileIds - Enabled file IDs for the current host.
+ * @returns {HTMLElement} Rendered block listing enabled files.
+ */
 function createEnabledFilesBlock(enabledFileIds) {
   const block = document.createElement("div");
   block.className = "enabled-files";
@@ -57,6 +74,12 @@ function createEnabledFilesBlock(enabledFileIds) {
   return block;
 }
 
+/**
+ * Render one host settings row with deletion action in options UI.
+ * @param {any} hostKey - Domain key used to isolate per-site settings.
+ * @param {any} hostState - Per-site configuration including enabled files and JS refresh mode.
+ * @returns {HTMLElement} Rendered row for one host settings entry.
+ */
 function createSiteRow(hostKey, hostState) {
   const row = document.createElement("div");
   row.className = "site-row";
@@ -110,6 +133,11 @@ function createSiteRow(hostKey, hostState) {
   return row;
 }
 
+/**
+ * Render all saved host settings in options UI.
+ * @param {any} hosts - Map of host states keyed by domain.
+ * @returns {void} Renders complete host settings list.
+ */
 function renderSites(hosts) {
   siteListElement.innerHTML = "";
 
@@ -127,6 +155,10 @@ function renderSites(hosts) {
   }
 }
 
+/**
+ * Render popup/options UI from current model state.
+ * @returns {void} Renders current model into UI.
+ */
 function render() {
   if (!model) {
     return;
@@ -146,6 +178,10 @@ function render() {
   renderSites(model.hosts || {});
 }
 
+/**
+ * Refresh UI model from background script then re-render.
+ * @returns {Promise<void>} Fetches fresh model and triggers render.
+ */
 async function refreshModel() {
   try {
     const response = await sendMessage({ type: "OPTIONS_GET_MODEL" });

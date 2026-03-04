@@ -28,10 +28,20 @@ const LR_PROTOCOLS = [
   "http://livereload.com/protocols/official-9",
 ];
 
+/**
+ * Deduplicate string lists before persisting state to keep storage deterministic.
+ * @param {any} values - List of candidate values to normalize before persistence.
+ * @returns {string[]} Deduplicated string list.
+ */
 function uniqueStrings(values) {
   return Array.from(new Set(values.filter((value) => typeof value === "string")));
 }
 
+/**
+ * Normalize per-host settings to protect runtime logic from malformed stored values.
+ * @param {any} input - Raw value loaded from config, storage, or message payload.
+ * @returns {object} Normalized per-host settings object.
+ */
 function normalizeHostState(input) {
   const source = input && typeof input === "object" ? input : {};
 
@@ -43,6 +53,11 @@ function normalizeHostState(input) {
   };
 }
 
+/**
+ * Normalize full extension state loaded from storage into a safe in-memory shape.
+ * @param {any} input - Raw value loaded from config, storage, or message payload.
+ * @returns {object} Normalized full extension state.
+ */
 function normalizeState(input) {
   const source = input && typeof input === "object" ? input : {};
   const globalState = source.global && typeof source.global === "object" ? source.global : {};
@@ -65,14 +80,29 @@ function normalizeState(input) {
   };
 }
 
+/**
+ * Build the dev-server origin used for manifest and file fetches.
+ * @param {any} globalState - Global server settings stored by the extension.
+ * @returns {string} HTTP origin of local dev server.
+ */
 function getServerOrigin(globalState) {
   return `http://${globalState.host}:${globalState.port}`;
 }
 
+/**
+ * Build manifest URL from current global server configuration.
+ * @param {any} globalState - Global server settings stored by the extension.
+ * @returns {string} Full manifest URL.
+ */
 function getManifestUrl(globalState) {
   return `${getServerOrigin(globalState)}${MANIFEST_ROUTE}`;
 }
 
+/**
+ * Normalize LiveReload payload paths so matching against manifest entries is reliable.
+ * @param {any} value - Raw value to sanitize or normalize before runtime usage.
+ * @returns {string} Canonical lowercase path used for comparisons.
+ */
 function normalizeChangedPath(value) {
   if (typeof value !== "string" || value.trim().length === 0) {
     return "";
@@ -81,6 +111,7 @@ function normalizeChangedPath(value) {
   let normalized = value.trim().replace(/\\/g, "/");
 
   try {
+    // LiveReload can send full URLs or relative paths depending on the sender.
     normalized = new URL(normalized).pathname;
   } catch (_error) {
     // Keep original value when not a full URL.
@@ -103,6 +134,11 @@ function normalizeChangedPath(value) {
   return normalized.toLowerCase();
 }
 
+/**
+ * Infer file type from a path to decide CSS refresh vs JS reload behavior.
+ * @param {any} value - Raw value to sanitize or normalize before runtime usage.
+ * @returns {"css"|"js"|""} File type inferred from path extension.
+ */
 function inferFileTypeFromPath(value) {
   const normalized = normalizeChangedPath(value);
 
@@ -117,6 +153,11 @@ function inferFileTypeFromPath(value) {
   return "";
 }
 
+/**
+ * Extract a stable host key from a tab URL for per-domain settings storage.
+ * @param {any} urlValue - URL-like value to parse or normalize.
+ * @returns {string|null} Host key for persisted settings, or null for unsupported URLs.
+ */
 function getHostKey(urlValue) {
   try {
     const parsed = new URL(urlValue);
@@ -129,6 +170,11 @@ function getHostKey(urlValue) {
   }
 }
 
+/**
+ * Promisify chrome.storage.get for easier async flow handling.
+ * @param {any} key - Storage key to read from chrome local storage.
+ * @returns {Promise<any>} Stored value for the requested key.
+ */
 function storageGet(key) {
   return new Promise((resolve, reject) => {
     chrome.storage.local.get(key, (result) => {
@@ -142,6 +188,11 @@ function storageGet(key) {
   });
 }
 
+/**
+ * Promisify chrome.storage.set for easier async flow handling.
+ * @param {any} value - Raw value to sanitize or normalize before runtime usage.
+ * @returns {Promise<void>} Resolves when write succeeds.
+ */
 function storageSet(value) {
   return new Promise((resolve, reject) => {
     chrome.storage.local.set(value, () => {
@@ -155,6 +206,11 @@ function storageSet(value) {
   });
 }
 
+/**
+ * Promisify chrome.tabs.query to compose tab operations with async/await.
+ * @param {any} queryInfo - Chrome tabs query descriptor.
+ * @returns {Promise<chrome.tabs.Tab[]>} Matching tabs list.
+ */
 function tabsQuery(queryInfo) {
   return new Promise((resolve, reject) => {
     chrome.tabs.query(queryInfo, (tabs) => {
@@ -168,6 +224,11 @@ function tabsQuery(queryInfo) {
   });
 }
 
+/**
+ * Promisify chrome.tabs.get to retrieve tab context safely.
+ * @param {any} tabId - Chrome tab identifier to target.
+ * @returns {Promise<chrome.tabs.Tab>} Tab descriptor.
+ */
 function tabGet(tabId) {
   return new Promise((resolve, reject) => {
     chrome.tabs.get(tabId, (tab) => {
@@ -181,6 +242,12 @@ function tabGet(tabId) {
   });
 }
 
+/**
+ * Send a message to content script and normalize runtime errors into a result object.
+ * @param {any} tabId - Chrome tab identifier to target.
+ * @param {any} payload - Message or payload object exchanged between extension components.
+ * @returns {Promise<{ok:boolean,error?:string}>} Message delivery result.
+ */
 function tabSendMessage(tabId, payload) {
   return new Promise((resolve) => {
     chrome.tabs.sendMessage(tabId, payload, () => {
@@ -194,6 +261,11 @@ function tabSendMessage(tabId, payload) {
   });
 }
 
+/**
+ * Promisify tab reload so JS auto-refresh flows can await completion triggers.
+ * @param {any} tabId - Chrome tab identifier to target.
+ * @returns {Promise<void>} Resolves once reload command is accepted.
+ */
 function tabReload(tabId) {
   return new Promise((resolve, reject) => {
     chrome.tabs.reload(tabId, () => {
@@ -207,12 +279,25 @@ function tabReload(tabId) {
   });
 }
 
+/**
+ * Small timing helper used to sequence reload actions.
+ * @param {any} ms - Delay duration in milliseconds.
+ * @returns {Promise<void>} Resolves after the requested delay.
+ */
 function delay(ms) {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
 }
 
+/**
+ * Forward debug events to page console through the content script bridge.
+ * @param {any} tabId - Chrome tab identifier to target.
+ * @param {any} message - Runtime message payload received from UI/content/background.
+ * @param {any} context - Structured log context appended to console events.
+ * @param {any} level - Log severity level used by page console bridge.
+ * @returns {Promise<void>} Resolves when log message is forwarded.
+ */
 async function logToTabConsole(tabId, message, context = null, level = "info") {
   await tabSendMessage(tabId, {
     type: "MFCI_LOG_EVENT",
@@ -222,6 +307,12 @@ async function logToTabConsole(tabId, message, context = null, level = "info") {
   });
 }
 
+/**
+ * Format human-readable file change labels for logs and UI feedback.
+ * @param {any} fileId - Stable manifest file identifier (type:path).
+ * @param {any} affectedIds - List of enabled file IDs impacted by a change event.
+ * @returns {string} Human-readable change summary.
+ */
 function formatChangedFileSummary(fileId, affectedIds) {
   if (typeof fileId === "string" && fileId.length > 0) {
     return fileId;
@@ -238,15 +329,30 @@ function formatChangedFileSummary(fileId, affectedIds) {
   return "unknown file";
 }
 
+/**
+ * Load and normalize persisted extension state from local storage.
+ * @returns {Promise<object>} Normalized state loaded from storage.
+ */
 async function loadState() {
   const rawState = await storageGet(STORAGE_KEY);
   return normalizeState(rawState);
 }
 
+/**
+ * Persist normalized extension state to local storage.
+ * @param {any} state - Full normalized extension state object.
+ * @returns {Promise<void>} Resolves when state is persisted.
+ */
 async function saveState(state) {
   await storageSet({ [STORAGE_KEY]: normalizeState(state) });
 }
 
+/**
+ * Return mutable host state, creating defaults when host is seen for the first time.
+ * @param {any} state - Full normalized extension state object.
+ * @param {any} hostKey - Domain key used to isolate per-site settings.
+ * @returns {object} Mutable host state instance.
+ */
 function getOrCreateHostState(state, hostKey) {
   if (!state.hosts[hostKey]) {
     state.hosts[hostKey] = { ...DEFAULT_HOST_STATE };
@@ -255,6 +361,12 @@ function getOrCreateHostState(state, hostKey) {
   return state.hosts[hostKey];
 }
 
+/**
+ * Return read-safe host state used by UI even when host has no stored config.
+ * @param {any} state - Full normalized extension state object.
+ * @param {any} hostKey - Domain key used to isolate per-site settings.
+ * @returns {object} Safe host state snapshot for reads.
+ */
 function getExistingHostState(state, hostKey) {
   if (!hostKey) {
     return { ...DEFAULT_HOST_STATE };
@@ -263,6 +375,11 @@ function getExistingHostState(state, hostKey) {
   return state.hosts[hostKey] ? normalizeHostState(state.hosts[hostKey]) : { ...DEFAULT_HOST_STATE };
 }
 
+/**
+ * Normalize raw manifest entries into extension-ready file descriptors.
+ * @param {any} file - Manifest or build file descriptor currently processed.
+ * @returns {object|null} Normalized manifest file or null when invalid.
+ */
 function normalizeManifestFile(file) {
   if (!file || typeof file !== "object") {
     return null;
@@ -292,6 +409,12 @@ function normalizeManifestFile(file) {
   return normalized;
 }
 
+/**
+ * Resolve a manifest file path to an absolute URL fetchable by background script.
+ * @param {any} file - Manifest or build file descriptor currently processed.
+ * @param {any} origin - Server origin used to resolve absolute file URLs.
+ * @returns {string} Absolute file URL.
+ */
 function resolveFileUrl(file, origin) {
   if (/^https?:\/\//.test(file.path)) {
     return file.path;
@@ -300,6 +423,11 @@ function resolveFileUrl(file, origin) {
   return `${origin}${file.path}`;
 }
 
+/**
+ * Fetch and normalize the current manifest published by the local dev server.
+ * @param {any} globalState - Global server settings stored by the extension.
+ * @returns {Promise<object>} Manifest with normalized file descriptors.
+ */
 async function fetchManifest(globalState) {
   const manifestUrl = getManifestUrl(globalState);
   const response = await fetch(manifestUrl, { cache: "no-store" });
@@ -318,6 +446,11 @@ async function fetchManifest(globalState) {
   };
 }
 
+/**
+ * Fetch file source text for CSS/JS injection payloads.
+ * @param {any} url - Absolute URL to fetch.
+ * @returns {Promise<string>} Raw file content.
+ */
 async function fetchFileText(url) {
   const response = await fetch(url, { cache: "no-store" });
 
@@ -328,9 +461,17 @@ async function fetchFileText(url) {
   return response.text();
 }
 
+/**
+ * Build the exact payload needed to synchronize one tab with current enabled files.
+ * @param {any} state - Full normalized extension state object.
+ * @param {any} hostKey - Domain key used to isolate per-site settings.
+ * @param {any} hostState - Per-site configuration including enabled files and JS refresh mode.
+ * @returns {Promise<object>} Payload sent to content script for tab sync.
+ */
 async function buildSyncPayload(state, hostKey, hostState) {
   const manifest = await fetchManifest(state.global);
 
+  // Only ship currently enabled files to content scripts to keep injection minimal.
   const activeManifestFiles = manifest.files.filter((file) => hostState.enabledFileIds.includes(file.id));
 
   const files = [];
@@ -353,11 +494,21 @@ async function buildSyncPayload(state, hostKey, hostState) {
   };
 }
 
+/**
+ * Return current active tab in the focused window.
+ * @returns {Promise<chrome.tabs.Tab|null>} Active tab or null when unavailable.
+ */
 async function getActiveTab() {
   const tabs = await tabsQuery({ active: true, currentWindow: true });
   return tabs.length > 0 ? tabs[0] : null;
 }
 
+/**
+ * Synchronize one tab with current host configuration and manifest content.
+ * @param {any} tabId - Chrome tab identifier to target.
+ * @param {any} reason - Sync reason used for diagnostics and message tracing.
+ * @returns {Promise<void>} Completes after best-effort tab synchronization.
+ */
 async function syncTab(tabId, reason) {
   let tab;
   try {
@@ -378,6 +529,7 @@ async function syncTab(tabId, reason) {
   try {
     const payload = await buildSyncPayload(state, hostKey, hostState);
     if (hasStoredHostState) {
+      // Keep error state clean once a successful sync occurred for this host.
       state.hosts[hostKey].lastError = "";
       await saveState(state);
     }
@@ -395,6 +547,11 @@ async function syncTab(tabId, reason) {
   }
 }
 
+/**
+ * Clear deferred JS update markers once a page reload applied them.
+ * @param {any} hostKey - Domain key used to isolate per-site settings.
+ * @returns {Promise<void>} Completes after pending JS markers are cleared.
+ */
 async function clearPendingUpdatesForHost(hostKey) {
   const state = await loadState();
   const hostState = state.hosts[hostKey];
@@ -407,6 +564,11 @@ async function clearPendingUpdatesForHost(hostKey) {
   await saveState(state);
 }
 
+/**
+ * Convenience helper to sync active tab after UI-driven setting changes.
+ * @param {any} reason - Sync reason used for diagnostics and message tracing.
+ * @returns {Promise<void>} Completes after active tab sync attempt.
+ */
 async function applyToCurrentTab(reason) {
   const activeTab = await getActiveTab();
   if (!activeTab || typeof activeTab.id !== "number") {
@@ -416,6 +578,10 @@ async function applyToCurrentTab(reason) {
   await syncTab(activeTab.id, reason);
 }
 
+/**
+ * Build popup view-model with host state, manifest state and server connectivity status.
+ * @returns {Promise<object>} Popup-ready view model.
+ */
 async function buildPopupModel() {
   const state = await loadState();
   const activeTab = await getActiveTab();
@@ -452,12 +618,22 @@ async function buildPopupModel() {
   };
 }
 
+/**
+ * Sort host entries for deterministic options-page rendering.
+ * @param {any} hosts - Map of host states keyed by domain.
+ * @returns {Array<[string,object]>} Host entries sorted by domain.
+ */
 function sortedHostEntries(hosts) {
   return Object.entries(hosts)
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([hostKey, hostState]) => [hostKey, normalizeHostState(hostState)]);
 }
 
+/**
+ * Project host state to the subset exposed by options UI.
+ * @param {any} hostState - Per-site configuration including enabled files and JS refresh mode.
+ * @returns {object} Host state projection used by options UI.
+ */
 function toOptionsHostState(hostState) {
   const normalized = normalizeHostState(hostState);
   return {
@@ -466,6 +642,10 @@ function toOptionsHostState(hostState) {
   };
 }
 
+/**
+ * Build options view-model with server info and all saved host settings.
+ * @returns {Promise<object>} Options page view model.
+ */
 async function buildOptionsModel() {
   const state = await loadState();
   const entries = sortedHostEntries(state.hosts);
@@ -487,8 +667,13 @@ async function buildOptionsModel() {
   };
 }
 
+/**
+ * Schedule WebSocket reconnection with single-timer semantics.
+ * @returns {void} Arms reconnect timer for socket recovery.
+ */
 function scheduleReconnect() {
   if (reconnectTimer) {
+    // Ensure only one reconnect loop is active at any time.
     clearTimeout(reconnectTimer);
   }
 
@@ -499,6 +684,10 @@ function scheduleReconnect() {
   }, 2000);
 }
 
+/**
+ * Connect to LiveReload WebSocket and wire handshake plus event listeners.
+ * @returns {Promise<void>} Completes when socket setup is initialized.
+ */
 async function connectSocket() {
   const state = await loadState();
   const nextSocketUrl = `ws://${state.global.host}:${state.global.port}/livereload`;
@@ -523,6 +712,7 @@ async function connectSocket() {
     socketError = "";
 
     try {
+      // LiveReload handshake: required so the server starts sending reload notifications.
       socket.send(
         JSON.stringify({
           command: "hello",
@@ -550,6 +740,11 @@ async function connectSocket() {
   });
 }
 
+/**
+ * Handle LiveReload events and trigger CSS sync or JS reload/pending flows per tab.
+ * @param {any} rawMessage - Raw WebSocket message payload from LiveReload server.
+ * @returns {Promise<void>} Completes after LiveReload event processing.
+ */
 async function handleSocketMessage(rawMessage) {
   let payload;
   try {
@@ -584,6 +779,7 @@ async function handleSocketMessage(rawMessage) {
 
       if (manifest) {
         const normalizedChangedPath = normalizeChangedPath(changedPath);
+        // Match incoming changed path against current manifest paths to resolve the exact file id when possible.
         for (const candidate of manifest.files) {
           if (candidate.type !== fileType) {
             continue;
@@ -668,6 +864,7 @@ async function handleSocketMessage(rawMessage) {
       console.info(reloadMessage, { tabId: tab.id, ...reloadContext });
       await logToTabConsole(tab.id, reloadMessage, reloadContext, "info");
       await delay(50);
+      // Full reload is required for JS because script tags can have side effects not safely hot-swappable.
       await tabReload(tab.id).catch(() => {});
       continue;
     }
@@ -690,6 +887,11 @@ async function handleSocketMessage(rawMessage) {
   }
 }
 
+/**
+ * Persist enabled files for a host and re-sync impacted tab(s).
+ * @param {any} message - Runtime message payload received from UI/content/background.
+ * @returns {Promise<object>} Mutation result for enabled file settings.
+ */
 async function updateHostFileSelection(message) {
   const state = await loadState();
   const hostState = getOrCreateHostState(state, message.hostKey);
@@ -708,6 +910,11 @@ async function updateHostFileSelection(message) {
   return { ok: true };
 }
 
+/**
+ * Persist JS auto-refresh preference for one host.
+ * @param {any} message - Runtime message payload received from UI/content/background.
+ * @returns {Promise<object>} Mutation result for auto-refresh setting.
+ */
 async function updateAutoRefresh(message) {
   const state = await loadState();
   const hostState = getOrCreateHostState(state, message.hostKey);
@@ -718,6 +925,11 @@ async function updateAutoRefresh(message) {
   return { ok: true };
 }
 
+/**
+ * Update global server port, reconnect socket and resync active tab.
+ * @param {any} message - Runtime message payload received from UI/content/background.
+ * @returns {Promise<object>} Mutation result for global port setting.
+ */
 async function updatePort(message) {
   const parsedPort = Number(message.port);
   if (!Number.isInteger(parsedPort) || parsedPort < 1 || parsedPort > 65535) {
@@ -737,6 +949,11 @@ async function updatePort(message) {
   return { ok: true };
 }
 
+/**
+ * Delete one host configuration and resync matching open tabs.
+ * @param {any} message - Runtime message payload received from UI/content/background.
+ * @returns {Promise<object>} Mutation result for host settings deletion.
+ */
 async function deleteHostSettings(message) {
   const hostKey = typeof message.hostKey === "string" ? message.hostKey.trim() : "";
   if (!hostKey) {
@@ -767,6 +984,12 @@ async function deleteHostSettings(message) {
   return { ok: true };
 }
 
+/**
+ * Store and expose last injection error per host for UI diagnostics.
+ * @param {any} sender - Chrome message sender used to infer source tab/host.
+ * @param {any} message - Runtime message payload received from UI/content/background.
+ * @returns {Promise<object>} Mutation result for host error state update.
+ */
 async function recordInjectionError(sender, message) {
   if (!sender || !sender.tab || !sender.tab.url) {
     return { ok: true };

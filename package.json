@@ -5,7 +5,8 @@
     "type": "commonjs",
     "main": "src/server.js",
     "bin": {
-        "mfci-dev-server": "bin/mfci-dev-server.js"
+        "mfci-dev-server": "bin/mfci-dev-server.js",
+        "mfci-build": "bin/mfci-build.js"
     },
     "files": [
         "bin",
@@ -17,11 +18,13 @@
         "node": ">=18"
     },
     "scripts": {
-        "check": "node --check src/server.js && node --check src/cli.js && node --check bin/mfci-dev-server.js"
+        "check": "node --check src/server.js && node --check src/cli.js && node --check src/build.js && node --check src/build-cli.js && node --check bin/mfci-dev-server.js && node --check bin/mfci-build.js"
     },
     "author": "Yolanare",
     "license": "MIT",
     "dependencies": {
-        "livereload": "^0.10.3"
+        "livereload": "^0.10.3",
+        "esbuild": "^0.25.0",
+        "sass": "^1.86.0"
     }
 }
