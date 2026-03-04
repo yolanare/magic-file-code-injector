@@ -850,29 +850,24 @@ async function handleSocketMessage(rawMessage) {
     }
 
     if (fileType === "css") {
-      const cssMessage = `[mfci] CSS hot refresh launched (${formatChangedFileSummary(fileId, [])}).`;
+      const cssMessage = `[mfci] CSS hot refresh: ${formatChangedFileSummary(fileId, [])}`;
       const cssContext = { hostKey, fileType, fileId: fileId || null };
-      console.info(cssMessage, { tabId: tab.id, ...cssContext });
-      await logToTabConsole(tab.id, cssMessage, cssContext, "info");
+      console.log(cssMessage);
+      await logToTabConsole(tab.id, cssMessage, null, "info");
       await syncTab(tab.id, "css-change");
       continue;
     }
 
     if (hostState.autoRefreshJs) {
-      const reloadMessage = `[mfci] Full page reload launched (JS auto-refresh, ${formatChangedFileSummary(fileId, affectedJsIds)}).`;
+      const reloadMessage = `[mfci] Full page reload (JS auto-refresh): ${formatChangedFileSummary(fileId, affectedJsIds)}`;
       const reloadContext = { hostKey, fileType, fileId: fileId || null, affectedJsIds };
-      console.info(reloadMessage, { tabId: tab.id, ...reloadContext });
-      await logToTabConsole(tab.id, reloadMessage, reloadContext, "info");
+      console.log(reloadMessage);
+      await logToTabConsole(tab.id, reloadMessage, null, "info");
       await delay(50);
       // Full reload is required for JS because script tags can have side effects not safely hot-swappable.
       await tabReload(tab.id).catch(() => {});
       continue;
     }
-
-    const pendingMessage = `[mfci] JS change detected (${formatChangedFileSummary(fileId, affectedJsIds)}). Auto-refresh is disabled, update pending until manual reload.`;
-    const pendingContext = { hostKey, fileType, fileId: fileId || null, affectedJsIds };
-    console.info(pendingMessage, { tabId: tab.id, ...pendingContext });
-    await logToTabConsole(tab.id, pendingMessage, pendingContext, "info");
 
     for (const pendingId of affectedJsIds) {
       if (!hostState.pendingJsUpdateIds.includes(pendingId)) {
@@ -1047,13 +1042,18 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     return;
   }
 
-  const hostKey = tab && tab.url ? getHostKey(tab.url) : null;
-  if (!hostKey) {
-    return;
-  }
+  (async () => {
+    // Read tab again to avoid missing URL snapshots from the onUpdated payload.
+    const latestTab = await tabGet(tabId).catch(() => null);
+    const hostKey = getHostKey((latestTab && latestTab.url) || (tab && tab.url) || "");
+    if (!hostKey) {
+      return;
+    }
 
-  clearPendingUpdatesForHost(hostKey).catch(() => {});
-  syncTab(tabId, "tab-complete").catch(() => {});
+    // Important: clear pending JS markers before sync to prevent state overwrite races.
+    await clearPendingUpdatesForHost(hostKey);
+    await syncTab(tabId, "tab-complete");
+  })().catch(() => {});
 });
 
 chrome.runtime.onInstalled.addListener(() => {

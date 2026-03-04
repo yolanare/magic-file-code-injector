@@ -114,6 +114,11 @@ h2 {
   background: #fcfdff;
 }
 
+.file-row-missing {
+  border-color: #f5d0b5;
+  background: #fff8f2;
+}
+
 .file-meta {
   display: grid;
   gap: 2px;
@@ -146,6 +151,11 @@ h2 {
   color: #1e4da1;
   text-transform: uppercase;
   font-weight: 700;
+}
+
+.file-badge-warning {
+  background: #ffe7d5;
+  color: #8b3a10;
 }
 
 .status {

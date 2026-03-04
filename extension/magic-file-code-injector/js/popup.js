@@ -30,6 +30,22 @@ function sendMessage(payload) {
 }
 
 /**
+ * Persist the enabled-file selection for current host then refresh popup model.
+ * @param {Set<string>} nextSelection - Next enabled file IDs for the current host.
+ * @returns {Promise<void>} Saves selection and reloads popup state.
+ */
+async function updateEnabledFileSelection(nextSelection) {
+  await sendMessage({
+    type: "POPUP_SET_ENABLED_FILES",
+    hostKey: model.hostKey,
+    tabId: model.tabId,
+    enabledFileIds: Array.from(nextSelection),
+  });
+
+  await refreshModel();
+}
+
+/**
  * Render one popup file row with toggle behavior bound to host settings.
  * @param {any} file - Manifest or build file descriptor currently processed.
  * @param {any} enabledFileIds - Enabled file IDs for the current host.
@@ -52,14 +68,7 @@ function createFileRow(file, enabledFileIds) {
       nextSelection.delete(file.id);
     }
 
-    await sendMessage({
-      type: "POPUP_SET_ENABLED_FILES",
-      hostKey: model.hostKey,
-      tabId: model.tabId,
-      enabledFileIds: Array.from(nextSelection),
-    });
-
-    await refreshModel();
+    await updateEnabledFileSelection(nextSelection);
   });
 
   const meta = document.createElement("div");
@@ -79,6 +88,56 @@ function createFileRow(file, enabledFileIds) {
   const badge = document.createElement("span");
   badge.className = "file-badge";
   badge.textContent = file.type === "js" && file.scriptType === "module" ? "js-module" : file.type;
+
+  row.appendChild(checkbox);
+  row.appendChild(meta);
+  row.appendChild(badge);
+
+  return row;
+}
+
+/**
+ * Render one warning row for a file ID still enabled in host settings but not found in current manifest.
+ * @param {any} fileId - Stable manifest file identifier (type:path).
+ * @param {any} enabledFileIds - Enabled file IDs for the current host.
+ * @returns {HTMLElement} Warning row for a missing enabled file.
+ */
+function createMissingFileRow(fileId, enabledFileIds) {
+  const row = document.createElement("label");
+  row.className = "file-row file-row-missing";
+
+  const checkbox = document.createElement("input");
+  checkbox.type = "checkbox";
+  checkbox.checked = true;
+  checkbox.disabled = !model.hostKey;
+  checkbox.addEventListener("change", async () => {
+    // Missing entries can only be removed from host settings from this row.
+    if (checkbox.checked) {
+      return;
+    }
+
+    const nextSelection = new Set(enabledFileIds);
+    nextSelection.delete(fileId);
+    await updateEnabledFileSelection(nextSelection);
+  });
+
+  const meta = document.createElement("div");
+  meta.className = "file-meta";
+
+  const label = document.createElement("div");
+  label.className = "file-label";
+  label.textContent = fileId;
+
+  const pathValue = document.createElement("div");
+  pathValue.className = "file-path";
+  pathValue.textContent = "not found on current local server manifest";
+
+  meta.appendChild(label);
+  meta.appendChild(pathValue);
+
+  const badge = document.createElement("span");
+  badge.className = "file-badge file-badge-warning";
+  badge.textContent = "not found";
 
   row.appendChild(checkbox);
   row.appendChild(meta);
@@ -150,15 +209,24 @@ function render() {
 
   const files = model.manifest && Array.isArray(model.manifest.files) ? model.manifest.files : [];
   const enabledFileIds = new Set(hostState.enabledFileIds || []);
+  const manifestIdSet = new Set(files.map((file) => file.id));
+  const missingEnabledFileIds =
+    model.manifest && Array.isArray(model.manifest.files) ?
+      hostState.enabledFileIds.filter((fileId) => !manifestIdSet.has(fileId))
+    : [];
 
   filesListElement.innerHTML = "";
 
-  if (files.length === 0) {
+  if (files.length === 0 && missingEnabledFileIds.length === 0) {
     const empty = document.createElement("div");
     empty.className = "status";
     empty.textContent = "No CSS/JS files found on the local manifest.";
     filesListElement.appendChild(empty);
     return;
+  }
+
+  for (const missingFileId of missingEnabledFileIds) {
+    filesListElement.appendChild(createMissingFileRow(missingFileId, enabledFileIds));
   }
 
   for (const file of files) {

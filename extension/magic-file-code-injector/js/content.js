@@ -132,10 +132,7 @@
     if (styleElement.getAttribute(STYLE_HASH_ATTR) !== contentHash) {
       styleElement.textContent = content;
       styleElement.setAttribute(STYLE_HASH_ATTR, contentHash);
-      logToPageConsole("info", `[MFCI] CSS refreshed: ${file.id}`, {
-        path: file.path || "",
-        url: file.url || "",
-      });
+      logToPageConsole("info", `[MFCI] CSS refreshed: ${file.id}`);
     }
   }
 
@@ -184,11 +181,7 @@
 
     rootNode.appendChild(scriptElement);
     executedScriptHashes.set(file.id, contentHash);
-    logToPageConsole("info", `[MFCI] JS refreshed: ${file.id}`, {
-      path: file.path || "",
-      url: sourceUrl,
-      scriptType: file.scriptType || "script",
-    });
+    logToPageConsole("info", `[MFCI] JS refreshed: ${file.id} (as ${file.scriptType || "script"})`);
   }
 
   /**
