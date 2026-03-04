@@ -748,16 +748,13 @@ async function connectSocket() {
   socket = new WebSocket(nextSocketUrl);
 
   socket.addEventListener("open", () => {
-    const wasDisconnected = connectionLossLogged;
-
     socketConnected = true;
     socketError = "";
     stopReconnectLoop();
     connectionLossLogged = false;
 
-    if (wasDisconnected) {
-      logToBrowserConsole("log", "[mfci] WebSocket connection restored.");
-    }
+    // Always log successful connection establishment for developer visibility.
+    logToBrowserConsole("log", "[mfci] WebSocket connection established.");
 
     try {
       // LiveReload handshake: required so the server starts sending reload notifications.
@@ -1066,6 +1063,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case "OPTIONS_DELETE_HOST":
         return deleteHostSettings(message);
       case "POPUP_FORCE_SYNC":
+        // Manual refresh should also force a new WebSocket connection attempt.
+        await connectSocket();
         await applyToCurrentTab("manual-sync");
         return { ok: true };
       case "MFCI_JS_INJECTION_ERROR":
