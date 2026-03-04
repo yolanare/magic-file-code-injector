@@ -29,7 +29,7 @@ const LR_PROTOCOLS = [
   "http://livereload.com/protocols/official-8",
   "http://livereload.com/protocols/official-9",
 ];
-const RECONNECT_INTERVAL_MS = 1000;
+const RECONNECT_INTERVAL_MS = 2000;
 const RECONNECT_WINDOW_MS = 20000;
 
 /**
@@ -659,7 +659,10 @@ function logConnectionLoss(reason) {
   }
 
   connectionLossLogged = true;
-  logToBrowserConsole("warn", `[mfci] WebSocket connection lost (${reason}).`);
+  logToBrowserConsole(
+    "warn",
+    `[mfci] WebSocket connection lost (${reason}). Retrying every ${RECONNECT_INTERVAL_MS / 1000}s for up to 20s.`
+  );
 }
 
 /**
@@ -1072,6 +1075,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         // Manual refresh should also force a new WebSocket connection attempt.
         await connectSocket();
         await applyToCurrentTab("manual-sync");
+        return { ok: true };
+      case "MFCI_KEEPALIVE":
+        // Content scripts ping periodically so background can recover WS after service-worker sleeps/timeouts.
+        if (!socketConnected) {
+          await connectSocket().catch(() => {});
+        }
         return { ok: true };
       case "MFCI_JS_INJECTION_ERROR":
         return recordInjectionError(sender, message);

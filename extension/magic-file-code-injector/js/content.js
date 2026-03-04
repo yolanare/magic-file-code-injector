@@ -3,6 +3,7 @@
   const STYLE_HASH_ATTR = "data-mfci-style-hash";
   const SCRIPT_ATTR = "data-mfci-script-id";
   const SCRIPT_HASH_ATTR = "data-mfci-script-hash";
+  const BACKGROUND_HEARTBEAT_MS = 5000;
 
   const executedScriptHashes = new Map();
 
@@ -268,6 +269,26 @@
     cleanupFiles(desiredCssIds, desiredJsIds);
   }
 
+  /**
+   * Periodically ping background script so it can keep/recover WebSocket connectivity without popup interaction.
+   * @returns {void} Starts low-frequency keepalive pings.
+   */
+  function startBackgroundHeartbeat() {
+    const sendHeartbeat = () => {
+      try {
+        chrome.runtime.sendMessage({ type: "MFCI_KEEPALIVE" }, () => {
+          // Ignore closed-service-worker errors; next ping will wake and retry.
+          void chrome.runtime.lastError;
+        });
+      } catch (_error) {
+        // No-op
+      }
+    };
+
+    sendHeartbeat();
+    setInterval(sendHeartbeat, BACKGROUND_HEARTBEAT_MS);
+  }
+
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (!message || typeof message.type !== "string") {
       return false;
@@ -294,4 +315,6 @@
 
     return false;
   });
+
+  startBackgroundHeartbeat();
 })();
