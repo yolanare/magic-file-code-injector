@@ -1,0 +1,193 @@
+(() => {
+  const STYLE_ATTR = "data-mfci-style-id";
+  const STYLE_HASH_ATTR = "data-mfci-style-hash";
+  const SCRIPT_ATTR = "data-mfci-script-id";
+  const SCRIPT_HASH_ATTR = "data-mfci-script-hash";
+  const SCRIPT_BLOB_ATTR = "data-mfci-script-blob-url";
+
+  const executedScriptHashes = new Map();
+
+  function hashString(value) {
+    let hash = 2166136261;
+
+    for (let index = 0; index < value.length; index += 1) {
+      hash ^= value.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+
+    return (hash >>> 0).toString(16);
+  }
+
+  function queryByAttribute(attributeName) {
+    return Array.from(document.querySelectorAll(`[${attributeName}]`));
+  }
+
+  function getRootNode() {
+    return document.head || document.documentElement || document.body;
+  }
+
+  function findById(attributeName, fileId) {
+    return queryByAttribute(attributeName).find((element) => element.getAttribute(attributeName) === fileId) || null;
+  }
+
+  function removeScriptElement(scriptElement) {
+    const blobUrl = scriptElement.getAttribute(SCRIPT_BLOB_ATTR);
+    if (blobUrl) {
+      URL.revokeObjectURL(blobUrl);
+    }
+
+    scriptElement.remove();
+  }
+
+  function notifyScriptError(fileId, errorMessage) {
+    try {
+      chrome.runtime.sendMessage({
+        type: "MFCI_JS_INJECTION_ERROR",
+        fileId,
+        error: errorMessage,
+      });
+    } catch (_error) {
+      // No-op
+    }
+  }
+
+  function applyCssFile(file) {
+    const rootNode = getRootNode();
+    if (!rootNode) {
+      return;
+    }
+
+    const content = typeof file.content === "string" ? file.content : "";
+    const contentHash = hashString(content);
+
+    let styleElement = findById(STYLE_ATTR, file.id);
+    if (!styleElement) {
+      styleElement = document.createElement("style");
+      styleElement.setAttribute(STYLE_ATTR, file.id);
+      rootNode.appendChild(styleElement);
+    }
+
+    if (styleElement.getAttribute(STYLE_HASH_ATTR) !== contentHash) {
+      styleElement.textContent = content;
+      styleElement.setAttribute(STYLE_HASH_ATTR, contentHash);
+    }
+  }
+
+  function executeJsFile(file) {
+    const rootNode = getRootNode();
+    if (!rootNode) {
+      return;
+    }
+
+    const content = typeof file.content === "string" ? file.content : "";
+    const contentHash = hashString(content);
+
+    if (executedScriptHashes.get(file.id) === contentHash) {
+      return;
+    }
+
+    removeJsFile(file.id);
+
+    const scriptElement = document.createElement("script");
+    scriptElement.setAttribute(SCRIPT_ATTR, file.id);
+    scriptElement.setAttribute(SCRIPT_HASH_ATTR, contentHash);
+
+    if (file.scriptType === "module") {
+      scriptElement.type = "module";
+    }
+
+    const sourceLabel = typeof file.url === "string" && file.url.length > 0 ? file.url : file.path || file.id;
+    const source = `${content}\n//# sourceURL=${sourceLabel}`;
+
+    const blob = new Blob([source], { type: "text/javascript" });
+    const blobUrl = URL.createObjectURL(blob);
+
+    scriptElement.src = blobUrl;
+    scriptElement.setAttribute(SCRIPT_BLOB_ATTR, blobUrl);
+    scriptElement.async = false;
+
+    scriptElement.addEventListener("error", () => {
+      notifyScriptError(file.id, "Execution failed. The page CSP may block this script.");
+    });
+
+    rootNode.appendChild(scriptElement);
+    executedScriptHashes.set(file.id, contentHash);
+  }
+
+  function removeCssFile(fileId) {
+    const styleElement = findById(STYLE_ATTR, fileId);
+    if (styleElement) {
+      styleElement.remove();
+    }
+  }
+
+  function removeJsFile(fileId) {
+    for (const scriptElement of queryByAttribute(SCRIPT_ATTR)) {
+      if (scriptElement.getAttribute(SCRIPT_ATTR) !== fileId) {
+        continue;
+      }
+
+      removeScriptElement(scriptElement);
+    }
+
+    executedScriptHashes.delete(fileId);
+  }
+
+  function cleanupFiles(desiredCssIds, desiredJsIds) {
+    for (const styleElement of queryByAttribute(STYLE_ATTR)) {
+      const fileId = styleElement.getAttribute(STYLE_ATTR);
+      if (!desiredCssIds.has(fileId)) {
+        styleElement.remove();
+      }
+    }
+
+    for (const scriptElement of queryByAttribute(SCRIPT_ATTR)) {
+      const fileId = scriptElement.getAttribute(SCRIPT_ATTR);
+      if (!desiredJsIds.has(fileId)) {
+        removeScriptElement(scriptElement);
+        executedScriptHashes.delete(fileId);
+      }
+    }
+  }
+
+  function applyState(payload) {
+    const files = Array.isArray(payload.files) ? payload.files : [];
+
+    const desiredCssIds = new Set();
+    const desiredJsIds = new Set();
+
+    for (const file of files) {
+      if (!file || typeof file.id !== "string") {
+        continue;
+      }
+
+      if (file.type === "css") {
+        desiredCssIds.add(file.id);
+        applyCssFile(file);
+        continue;
+      }
+
+      if (file.type === "js") {
+        desiredJsIds.add(file.id);
+        executeJsFile(file);
+      }
+    }
+
+    cleanupFiles(desiredCssIds, desiredJsIds);
+  }
+
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (!message || message.type !== "MFCI_APPLY_STATE") {
+      return false;
+    }
+
+    try {
+      applyState(message);
+      sendResponse({ ok: true });
+    } catch (error) {
+      sendResponse({ ok: false, error: String(error.message || error) });
+    }
+
+    return true;
+  });
+})();

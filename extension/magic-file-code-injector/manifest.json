@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "magic-file-code-injector",
+  "description": "Inject local CSS and JavaScript files by domain with live updates.",
+  "version": "1.0.0",
+  "action": {
+    "default_icon": "icons/48x48.png",
+    "default_popup": "popup.html",
+    "default_title": "magic-file-code-injector"
+  },
+  "background": {
+    "service_worker": "js/background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "js/content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "permissions": [
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "icons": {
+    "48": "icons/48x48.png",
+    "64": "icons/64x64.png",
+    "128": "icons/128x128.png"
+  }
+}
