@@ -132,7 +132,7 @@
     if (styleElement.getAttribute(STYLE_HASH_ATTR) !== contentHash) {
       styleElement.textContent = content;
       styleElement.setAttribute(STYLE_HASH_ATTR, contentHash);
-      logToPageConsole("info", `[MFCI] CSS refreshed: ${file.id}`);
+      logToPageConsole("info", `[mfci] CSS refreshed: ${file.id}`);
     }
   }
 
@@ -181,7 +181,7 @@
 
     rootNode.appendChild(scriptElement);
     executedScriptHashes.set(file.id, contentHash);
-    logToPageConsole("info", `[MFCI] JS refreshed: ${file.id} (as ${file.scriptType || "script"})`);
+    logToPageConsole("info", `[mfci] JS refreshed: ${file.id} (as ${file.scriptType || "script"})`);
   }
 
   /**
@@ -284,11 +284,10 @@
       return true;
     }
 
-    if (message.type === "MFCI_LOG_EVENT") {
+    if (message.type === "MFCI_BROWSER_LOG") {
       const level = typeof message.level === "string" ? message.level : "info";
-      const logMessage = typeof message.message === "string" ? message.message : "[MFCI] Event";
-      const context = message.context && typeof message.context === "object" ? message.context : undefined;
-      logToPageConsole(level, logMessage, context);
+      const logMessage = typeof message.message === "string" ? message.message : "[mfci] Event";
+      logToPageConsole(level, logMessage);
       sendResponse({ ok: true });
       return false;
     }

@@ -21,12 +21,16 @@ let socketUrl = "";
 let socketConnected = false;
 let socketError = "";
 let reconnectTimer = null;
+let reconnectUntil = 0;
+let connectionLossLogged = false;
 
 const LR_PROTOCOLS = [
   "http://livereload.com/protocols/official-7",
   "http://livereload.com/protocols/official-8",
   "http://livereload.com/protocols/official-9",
 ];
+const RECONNECT_INTERVAL_MS = 1000;
+const RECONNECT_WINDOW_MS = 20000;
 
 /**
  * Deduplicate string lists before persisting state to keep storage deterministic.
@@ -288,45 +292,6 @@ function delay(ms) {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
-}
-
-/**
- * Forward debug events to page console through the content script bridge.
- * @param {any} tabId - Chrome tab identifier to target.
- * @param {any} message - Runtime message payload received from UI/content/background.
- * @param {any} context - Structured log context appended to console events.
- * @param {any} level - Log severity level used by page console bridge.
- * @returns {Promise<void>} Resolves when log message is forwarded.
- */
-async function logToTabConsole(tabId, message, context = null, level = "info") {
-  await tabSendMessage(tabId, {
-    type: "MFCI_LOG_EVENT",
-    level,
-    message,
-    context: context && typeof context === "object" ? context : undefined,
-  });
-}
-
-/**
- * Format human-readable file change labels for logs and UI feedback.
- * @param {any} fileId - Stable manifest file identifier (type:path).
- * @param {any} affectedIds - List of enabled file IDs impacted by a change event.
- * @returns {string} Human-readable change summary.
- */
-function formatChangedFileSummary(fileId, affectedIds) {
-  if (typeof fileId === "string" && fileId.length > 0) {
-    return fileId;
-  }
-
-  if (Array.isArray(affectedIds) && affectedIds.length === 1) {
-    return affectedIds[0];
-  }
-
-  if (Array.isArray(affectedIds) && affectedIds.length > 1) {
-    return `${affectedIds.length} files`;
-  }
-
-  return "unknown file";
 }
 
 /**
@@ -668,20 +633,95 @@ async function buildOptionsModel() {
 }
 
 /**
- * Schedule WebSocket reconnection with single-timer semantics.
- * @returns {void} Arms reconnect timer for socket recovery.
+ * Stop the current reconnect loop and reset retry window metadata.
+ * @returns {void} Clears reconnect timer state.
  */
-function scheduleReconnect() {
-  if (reconnectTimer) {
-    // Ensure only one reconnect loop is active at any time.
-    clearTimeout(reconnectTimer);
+function stopReconnectLoop() {
+  if (!reconnectTimer) {
+    return;
   }
 
-  reconnectTimer = setTimeout(() => {
-    connectSocket().catch(() => {
-      scheduleReconnect();
-    });
-  }, 2000);
+  clearInterval(reconnectTimer);
+  reconnectTimer = null;
+  reconnectUntil = 0;
+}
+
+/**
+ * Log one connection-loss event and ignore duplicate `error`/`close` cascades for the same outage.
+ * @param {string} reason - Human-readable reason for diagnostics.
+ * @returns {void} Writes one warning line when outage starts.
+ */
+function logConnectionLoss(reason) {
+  if (connectionLossLogged) {
+    return;
+  }
+
+  connectionLossLogged = true;
+  logToBrowserConsole("warn", `[mfci] WebSocket connection lost (${reason}).`);
+}
+
+/**
+ * Mirror extension runtime logs to page consoles so developers can see them in regular DevTools.
+ * @param {"log"|"warn"|"error"} level - Log severity for console output.
+ * @param {string} message - Human-readable log message.
+ * @returns {void} Writes log in service worker and broadcasts to web-page consoles.
+ */
+function logToBrowserConsole(level, message) {
+  const method = level === "warn" ? "warn" : level === "error" ? "error" : "log";
+  console[method](message);
+
+  tabsQuery({ url: ["http://*/*", "https://*/*"] })
+    .then((tabs) => Promise.all(
+      tabs
+        .filter((tab) => typeof tab.id === "number")
+        .map((tab) =>
+          tabSendMessage(tab.id, {
+            type: "MFCI_BROWSER_LOG",
+            level,
+            message,
+          })
+        )
+    ))
+    .catch(() => {});
+}
+
+/**
+ * Retry WebSocket connection at regular intervals for a fixed time window.
+ * @returns {void} Starts or keeps an active reconnect loop.
+ */
+function scheduleReconnect() {
+  if (socketConnected) {
+    stopReconnectLoop();
+    return;
+  }
+
+  const now = Date.now();
+  if (reconnectUntil <= now) {
+    reconnectUntil = now + RECONNECT_WINDOW_MS;
+  }
+
+  if (reconnectTimer) {
+    return;
+  }
+
+  reconnectTimer = setInterval(() => {
+    if (socketConnected) {
+      stopReconnectLoop();
+      return;
+    }
+
+    if (Date.now() >= reconnectUntil) {
+      socketError = "WebSocket reconnect timeout (20s).";
+      logToBrowserConsole("warn", "[mfci] Reconnect attempts stopped after 20s.");
+      stopReconnectLoop();
+      return;
+    }
+
+    connectSocket().catch(() => {});
+  }, RECONNECT_INTERVAL_MS);
+
+  // Try once immediately instead of waiting for the first interval tick.
+  connectSocket().catch(() => {});
 }
 
 /**
@@ -708,8 +748,16 @@ async function connectSocket() {
   socket = new WebSocket(nextSocketUrl);
 
   socket.addEventListener("open", () => {
+    const wasDisconnected = connectionLossLogged;
+
     socketConnected = true;
     socketError = "";
+    stopReconnectLoop();
+    connectionLossLogged = false;
+
+    if (wasDisconnected) {
+      logToBrowserConsole("log", "[mfci] WebSocket connection restored.");
+    }
 
     try {
       // LiveReload handshake: required so the server starts sending reload notifications.
@@ -728,10 +776,13 @@ async function connectSocket() {
   socket.addEventListener("error", () => {
     socketConnected = false;
     socketError = "WebSocket connection failed.";
+    logConnectionLoss("error");
+    scheduleReconnect();
   });
 
   socket.addEventListener("close", () => {
     socketConnected = false;
+    logConnectionLoss("close");
     scheduleReconnect();
   });
 
@@ -850,19 +901,11 @@ async function handleSocketMessage(rawMessage) {
     }
 
     if (fileType === "css") {
-      const cssMessage = `[mfci] CSS hot refresh: ${formatChangedFileSummary(fileId, [])}`;
-      const cssContext = { hostKey, fileType, fileId: fileId || null };
-      console.log(cssMessage);
-      await logToTabConsole(tab.id, cssMessage, null, "info");
       await syncTab(tab.id, "css-change");
       continue;
     }
 
     if (hostState.autoRefreshJs) {
-      const reloadMessage = `[mfci] Full page reload (JS auto-refresh): ${formatChangedFileSummary(fileId, affectedJsIds)}`;
-      const reloadContext = { hostKey, fileType, fileId: fileId || null, affectedJsIds };
-      console.log(reloadMessage);
-      await logToTabConsole(tab.id, reloadMessage, null, "info");
       await delay(50);
       // Full reload is required for JS because script tags can have side effects not safely hot-swappable.
       await tabReload(tab.id).catch(() => {});
