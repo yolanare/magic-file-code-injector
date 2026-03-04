@@ -1,0 +1,27 @@
+{
+    "name": "@mfci/dev-server",
+    "version": "0.1.0",
+    "description": "Local manifest + LiveReload server for magic-file-code-injector workflows.",
+    "type": "commonjs",
+    "main": "src/server.js",
+    "bin": {
+        "mfci-dev-server": "bin/mfci-dev-server.js"
+    },
+    "files": [
+        "bin",
+        "src",
+        "extension/magic-file-code-injector",
+        "README.md"
+    ],
+    "engines": {
+        "node": ">=18"
+    },
+    "scripts": {
+        "check": "node --check src/server.js && node --check src/cli.js && node --check bin/mfci-dev-server.js"
+    },
+    "author": "Yolanare",
+    "license": "MIT",
+    "dependencies": {
+        "livereload": "^0.10.3"
+    }
+}

@@ -1,78 +1,67 @@
 # magic-file-code-injector
 
-Local workflow to inject **CSS + JavaScript** from your machine into any site, with per-domain selection memory.
+Repository with:
 
-## Project structure
+- browser extension: `extension/magic-file-code-injector`
+- reusable npm package: `@mfci/dev-server` (CLI: `mfci-dev-server`)
 
-- `test/`: local dev server + watch pipeline that exposes files and manifest
-- `extension/magic-file-code-injector/`: browser extension (Chrome/Firefox MV3)
+The package now ships with:
 
-## Quick start
+- CLI/server code (`bin`, `src`)
+- extension source (`extension/magic-file-code-injector`)
 
-### 1) Start local file server
+## Reusable package
 
-```bash
-cd test
-npm install
-npm run dev
-```
+The package exposes a local HTTP + LiveReload server that serves:
 
-This starts:
+- `/magic-file-code-injector.manifest.json`
+- configured CSS/JS files
+- websocket endpoint: `/livereload`
 
-- Sass watcher: `test/css/dev -> test/css/dist`
-- Local HTTP + WebSocket server: `http://127.0.0.1:35888`
+### Minimal setup for future projects
 
-Server endpoints:
-
-- Manifest: `http://127.0.0.1:35888/magic-file-code-injector.manifest.json`
-- WebSocket: `ws://127.0.0.1:35888/livereload`
-
-### 2) Load extension
-
-Load unpacked extension from:
-
-`extension/magic-file-code-injector`
-
-### 3) Use on a site
-
-- Open any `http` or `https` page
-- Click the extension icon
-- Select files to activate for the current domain
-- Optional: enable `Auto-refresh page when JS updates`
-
-Selections are saved per host (default: all files disabled).
-
-## Manifest contract
-
-The extension expects:
-
-`/magic-file-code-injector.manifest.json`
-
-Example:
+Copy this `package.json` section:
 
 ```json
 {
-  "version": 1,
-  "generatedAt": "2026-03-04T10:00:00.000Z",
-  "files": [
-    {
-      "id": "css:/css/dist/test.css",
-      "type": "css",
-      "path": "/css/dist/test.css",
-      "label": "test.css"
+    "scripts": {
+        "inject:server": "mfci-dev-server",
+        "inject:build": "node -e \"console.log('No build step required')\""
     },
-    {
-      "id": "js:/js/test.js",
-      "type": "js",
-      "scriptType": "script",
-      "path": "/js/test.js",
-      "label": "test.js"
+    "devDependencies": {
+        "@mfci/dev-server": "^0.1.0"
     }
-  ]
 }
 ```
 
-## Notes
+With defaults, no extra config file is required.
+The server expects local files in:
 
-- JavaScript injection is **best effort**. On strict CSP pages, execution can be blocked.
-- If JS auto-refresh is disabled, JS file changes are stored as pending updates per domain.
+- `css/dist` (served as `/css/dist/*`)
+- `js` (served as `/js/*`)
+
+Then run:
+
+```bash
+npm install
+npm run inject:server
+```
+
+## Extension
+
+Load unpacked from:
+
+`extension/magic-file-code-injector`
+
+On a target website:
+
+1. Open popup.
+2. Enable CSS/JS files for the current domain.
+3. Optionally enable auto-refresh for JS.
+
+## CLI options
+
+```bash
+mfci-dev-server --config mfci.config.cjs
+mfci-dev-server --config mfci.config.cjs --port 35900 --host 127.0.0.1
+```
