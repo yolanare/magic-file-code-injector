@@ -13,8 +13,8 @@ const MANIFEST_ROUTE = "/magic-file-code-injector.manifest.json";
 const WATCH_DEFINITIONS = [
   {
     type: "css",
-    urlPrefix: "/dist",
-    fsRoot: path.resolve(PROJECT_ROOT, "dist"),
+    urlPrefix: "/css/dist",
+    fsRoot: path.resolve(PROJECT_ROOT, "css/dist"),
     extensions: new Set([".css"]),
   },
   {

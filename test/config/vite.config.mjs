@@ -2,7 +2,7 @@ import { resolve } from "node:path";
 import { defineConfig } from "vite";
 
 export default defineConfig({
-  root: resolve(__dirname, "dist"),
+  root: resolve(__dirname, "../css/dist"),
   publicDir: false,
   server: {
     host: "127.0.0.1",

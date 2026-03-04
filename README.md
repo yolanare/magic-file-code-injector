@@ -19,7 +19,7 @@ npm run dev
 
 This starts:
 
-- Sass watcher: `test/css/dev -> test/dist`
+- Sass watcher: `test/css/dev -> test/css/dist`
 - Local HTTP + WebSocket server: `http://127.0.0.1:35888`
 
 Server endpoints:
@@ -56,9 +56,9 @@ Example:
   "generatedAt": "2026-03-04T10:00:00.000Z",
   "files": [
     {
-      "id": "css:/dist/test.css",
+      "id": "css:/css/dist/test.css",
       "type": "css",
-      "path": "/dist/test.css",
+      "path": "/css/dist/test.css",
       "label": "test.css"
     },
     {

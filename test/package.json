@@ -3,12 +3,12 @@
   "private": true,
   "version": "1.0.0",
   "scripts": {
-    "watch": "sass --watch css/dev:dist --no-source-map",
+    "watch": "sass --watch css/dev:css/dist --no-source-map",
     "serve": "vite --config config/vite.config.mjs",
     "server": "node config/livereload.js",
     "dev": "concurrently -k -n SASS,SERVER \"npm:watch\" \"npm:server\"",
     "dev:full": "concurrently -k -n SASS,SERVER,VITE \"npm:watch\" \"npm:server\" \"npm:serve\"",
-    "build": "sass css/dev:dist --no-source-map"
+    "build": "sass css/dev:css/dist --no-source-map"
   },
   "devDependencies": {
     "chokidar": "^4.0.3",
