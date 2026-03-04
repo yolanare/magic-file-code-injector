@@ -33,6 +33,17 @@ const MIME_TYPES = {
   ".txt": "text/plain; charset=utf-8",
 };
 
+function inferReloadType(filePath) {
+  const extension = path.extname(String(filePath || "")).toLowerCase();
+  if (extension === ".css") {
+    return "css";
+  }
+  if (extension === ".js" || extension === ".mjs") {
+    return "js";
+  }
+  return "asset";
+}
+
 function isPathInside(basePath, targetPath) {
   const relativePath = path.relative(basePath, targetPath);
   return relativePath !== "" && !relativePath.startsWith("..") && !path.isAbsolute(relativePath);
@@ -229,6 +240,13 @@ const lrServer = livereload.createServer({
   applyCSSLive: true,
   server: httpServer,
 });
+
+const originalRefresh = lrServer.refresh.bind(lrServer);
+lrServer.refresh = (filePath) => {
+  const reloadType = inferReloadType(filePath);
+  console.log(`[mfci-server] Live change detected (${reloadType}): ${filePath}`);
+  return originalRefresh(filePath);
+};
 
 for (const watchDir of watchDirs) {
   lrServer.watch(watchDir);

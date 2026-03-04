@@ -207,6 +207,37 @@ function tabReload(tabId) {
   });
 }
 
+function delay(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+async function logToTabConsole(tabId, message, context = null, level = "info") {
+  await tabSendMessage(tabId, {
+    type: "MFCI_LOG_EVENT",
+    level,
+    message,
+    context: context && typeof context === "object" ? context : undefined,
+  });
+}
+
+function formatChangedFileSummary(fileId, affectedIds) {
+  if (typeof fileId === "string" && fileId.length > 0) {
+    return fileId;
+  }
+
+  if (Array.isArray(affectedIds) && affectedIds.length === 1) {
+    return affectedIds[0];
+  }
+
+  if (Array.isArray(affectedIds) && affectedIds.length > 1) {
+    return `${affectedIds.length} files`;
+  }
+
+  return "unknown file";
+}
+
 async function loadState() {
   const rawState = await storageGet(STORAGE_KEY);
   return normalizeState(rawState);
@@ -623,14 +654,28 @@ async function handleSocketMessage(rawMessage) {
     }
 
     if (fileType === "css") {
+      const cssMessage = `[MFCI] CSS change detected (${formatChangedFileSummary(fileId, [])}). Refreshing styles.`;
+      const cssContext = { hostKey, fileType, fileId: fileId || null };
+      console.info(cssMessage, { tabId: tab.id, ...cssContext });
+      await logToTabConsole(tab.id, cssMessage, cssContext, "info");
       await syncTab(tab.id, "css-change");
       continue;
     }
 
     if (hostState.autoRefreshJs) {
+      const reloadMessage = `[MFCI] JS change detected (${formatChangedFileSummary(fileId, affectedJsIds)}). Auto-refresh is enabled, triggering full page reload.`;
+      const reloadContext = { hostKey, fileType, fileId: fileId || null, affectedJsIds };
+      console.info(reloadMessage, { tabId: tab.id, ...reloadContext });
+      await logToTabConsole(tab.id, reloadMessage, reloadContext, "info");
+      await delay(50);
       await tabReload(tab.id).catch(() => {});
       continue;
     }
+
+    const pendingMessage = `[MFCI] JS change detected (${formatChangedFileSummary(fileId, affectedJsIds)}). Auto-refresh is disabled, update pending until manual reload.`;
+    const pendingContext = { hostKey, fileType, fileId: fileId || null, affectedJsIds };
+    console.info(pendingMessage, { tabId: tab.id, ...pendingContext });
+    await logToTabConsole(tab.id, pendingMessage, pendingContext, "info");
 
     for (const pendingId of affectedJsIds) {
       if (!hostState.pendingJsUpdateIds.includes(pendingId)) {
