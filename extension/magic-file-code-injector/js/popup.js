@@ -130,14 +130,14 @@ function createMissingFileRow(fileId, enabledFileIds) {
 
   const pathValue = document.createElement("div");
   pathValue.className = "file-path";
-  pathValue.textContent = "not found on current local server manifest";
+  pathValue.textContent = "not found on current local server";
 
   meta.appendChild(label);
   meta.appendChild(pathValue);
 
   const badge = document.createElement("span");
   badge.className = "file-badge file-badge-warning";
-  badge.textContent = "not found";
+  badge.textContent = "missing";
 
   row.appendChild(checkbox);
   row.appendChild(meta);
