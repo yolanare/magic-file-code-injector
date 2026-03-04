@@ -3,6 +3,7 @@ const fsPromises = require("node:fs/promises");
 const path = require("node:path");
 const sass = require("sass");
 const esbuild = require("esbuild");
+const { formatLogLine, formatPath, supportsColor } = require("./log-format");
 
 const DEFAULT_BUILD_LOG_PREFIX = "[mfci-build]";
 const DEFAULT_SASS_EXTENSIONS = [".scss", ".sass", ".css"];
@@ -143,9 +144,13 @@ function normalizeCopyTasks(source, cwd) {
 function normalizeBuildConfig(inputConfig = {}, options = {}) {
   const cwd = options.cwd || process.cwd();
   const source = inputConfig && typeof inputConfig === "object" ? inputConfig : {};
+  const logger = typeof options.logger === "function" ? options.logger : console.log;
+  const useColor = typeof options.useColor === "boolean" ? options.useColor : supportsColor();
 
   return {
     cwd,
+    logger,
+    useColor,
     logPrefix: isNonEmptyString(source.logPrefix) ? source.logPrefix.trim() : DEFAULT_BUILD_LOG_PREFIX,
     clean: normalizeBoolean(source.clean, false),
     sass: normalizeSassConfig(source.sass, cwd),
@@ -190,6 +195,46 @@ async function walkDirectory(directoryPath) {
  */
 function withPosixSeparators(value) {
   return value.split(path.sep).join("/");
+}
+
+/**
+ * Render a filesystem path as a short, gray label in logs.
+ * @param {any} config - Normalized runtime configuration for the current subsystem.
+ * @param {any} absolutePath - Absolute path to display.
+ * @returns {string} Styled relative path label.
+ */
+function displayPath(config, absolutePath) {
+  const relativePath = withPosixSeparators(path.relative(config.cwd, absolutePath) || ".");
+  return formatPath(relativePath, { useColor: config.useColor });
+}
+
+/**
+ * Render source and target paths as a consistent log segment.
+ * @param {any} config - Normalized runtime configuration for the current subsystem.
+ * @param {any} sourcePath - Source file or directory path.
+ * @param {any} targetPath - Target file or directory path.
+ * @returns {string} Styled source-to-target segment.
+ */
+function displayPathPair(config, sourcePath, targetPath) {
+  return `${displayPath(config, sourcePath)} -> ${displayPath(config, targetPath)}`;
+}
+
+/**
+ * Emit one structured build log through the configured logger.
+ * @param {any} config - Normalized runtime configuration for the current subsystem.
+ * @param {"info"|"success"|"warn"|"error"} level - Severity level used for color and hierarchy.
+ * @param {any} message - Runtime message payload received from UI/content/background.
+ * @returns {void} Writes message to configured logger.
+ */
+function logBuild(config, level, message) {
+  config.logger(
+    formatLogLine({
+      prefix: config.logPrefix,
+      level,
+      message,
+      useColor: config.useColor,
+    })
+  );
 }
 
 /**
@@ -265,18 +310,18 @@ async function cleanOutputDirectories(config) {
     }
 
     if (isSamePath(outputDir, config.sass.srcDir) || isSamePath(outputDir, config.js.srcDir)) {
-      console.log(`${config.logPrefix} Skip clean for source directory: ${path.relative(config.cwd, outputDir) || "."}`);
+      logBuild(config, "warn", `Skip clean for source directory: ${displayPath(config, outputDir)}`);
       continue;
     }
 
     if (isPathInsideOrSame(outputDir, config.sass.srcDir) || isPathInsideOrSame(outputDir, config.js.srcDir)) {
       // Prevent destructive clean when output is a parent folder containing source trees.
-      console.log(`${config.logPrefix} Skip clean for parent directory containing sources: ${path.relative(config.cwd, outputDir) || "."}`);
+      logBuild(config, "warn", `Skip clean for parent directory containing sources: ${displayPath(config, outputDir)}`);
       continue;
     }
 
     await fsPromises.rm(outputDir, { recursive: true, force: true });
-    console.log(`${config.logPrefix} Cleaned ${path.relative(config.cwd, outputDir) || "."}`);
+    logBuild(config, "info", `Cleaned ${displayPath(config, outputDir)}`);
   }
 }
 
@@ -289,14 +334,12 @@ async function runSassBuild(config) {
   const sassConfig = config.sass;
 
   if (!sassConfig.enabled) {
-    console.log(`${config.logPrefix} Sass build disabled.`);
+    logBuild(config, "info", "Sass build disabled.");
     return 0;
   }
 
   if (!fs.existsSync(sassConfig.srcDir)) {
-    console.log(
-      `${config.logPrefix} Sass source directory not found (optional, skipped): ${path.relative(config.cwd, sassConfig.srcDir) || "."}`
-    );
+    logBuild(config, "info", `Sass source directory not found (optional, skipped): ${displayPath(config, sassConfig.srcDir)}`);
     return 0;
   }
 
@@ -307,7 +350,7 @@ async function runSassBuild(config) {
   });
 
   if (candidates.length === 0) {
-    console.log(`${config.logPrefix} No Sass/CSS files to build.`);
+    logBuild(config, "info", "No Sass/CSS files to build.");
     return 0;
   }
 
@@ -325,11 +368,7 @@ async function runSassBuild(config) {
     if (isPlainCss) {
       // `.css` files are copied as-is so hand-authored CSS in `css/dev` keeps exact output.
       await fsPromises.copyFile(inputFile, outputFile);
-      console.log(
-        `${config.logPrefix} CSS copied: ${withPosixSeparators(path.relative(config.cwd, inputFile))} -> ${withPosixSeparators(
-          path.relative(config.cwd, outputFile)
-        )}`
-      );
+      logBuild(config, "success", `CSS copied: ${displayPathPair(config, inputFile, outputFile)}`);
       builtCount += 1;
       continue;
     }
@@ -350,11 +389,7 @@ async function runSassBuild(config) {
 
     await fsPromises.writeFile(outputFile, cssText, "utf8");
 
-    console.log(
-      `${config.logPrefix} Sass built: ${withPosixSeparators(path.relative(config.cwd, inputFile))} -> ${withPosixSeparators(
-        path.relative(config.cwd, outputFile)
-      )}`
-    );
+    logBuild(config, "success", `Sass built: ${displayPathPair(config, inputFile, outputFile)}`);
 
     builtCount += 1;
   }
@@ -371,14 +406,12 @@ async function runJsBuild(config) {
   const jsConfig = config.js;
 
   if (!jsConfig.enabled) {
-    console.log(`${config.logPrefix} JS build disabled.`);
+    logBuild(config, "info", "JS build disabled.");
     return 0;
   }
 
   if (!fs.existsSync(jsConfig.srcDir)) {
-    console.log(
-      `${config.logPrefix} JS source directory not found (optional, skipped): ${path.relative(config.cwd, jsConfig.srcDir) || "."}`
-    );
+    logBuild(config, "info", `JS source directory not found (optional, skipped): ${displayPath(config, jsConfig.srcDir)}`);
     return 0;
   }
 
@@ -389,7 +422,7 @@ async function runJsBuild(config) {
   });
 
   if (candidates.length === 0) {
-    console.log(`${config.logPrefix} No JS/TS files to build.`);
+    logBuild(config, "info", "No JS/TS files to build.");
     return 0;
   }
 
@@ -418,11 +451,7 @@ async function runJsBuild(config) {
       charset: "utf8",
     });
 
-    console.log(
-      `${config.logPrefix} JS built: ${withPosixSeparators(path.relative(config.cwd, inputFile))} -> ${withPosixSeparators(
-        path.relative(config.cwd, outputFile)
-      )}`
-    );
+    logBuild(config, "success", `JS built: ${displayPathPair(config, inputFile, outputFile)}`);
 
     builtCount += 1;
   }
@@ -444,7 +473,7 @@ async function runCopyTasks(config) {
 
   for (const task of config.copy) {
     if (!fs.existsSync(task.from)) {
-      console.log(`${config.logPrefix} Copy source not found: ${path.relative(config.cwd, task.from) || "."}`);
+      logBuild(config, "warn", `Copy source not found: ${displayPath(config, task.from)}`);
       continue;
     }
 
@@ -460,10 +489,10 @@ async function runCopyTasks(config) {
       copiedCount += 1;
     }
 
-    console.log(
-      `${config.logPrefix} Copy task complete: ${withPosixSeparators(path.relative(config.cwd, task.from))} -> ${withPosixSeparators(
-        path.relative(config.cwd, task.to)
-      )} (${files.length} file${files.length > 1 ? "s" : ""})`
+    logBuild(
+      config,
+      "success",
+      `Copy task complete: ${displayPathPair(config, task.from, task.to)} (${files.length} file${files.length > 1 ? "s" : ""})`
     );
   }
 
@@ -486,7 +515,7 @@ async function runBuild(inputConfig = {}, options = {}) {
   const copyCount = await runCopyTasks(config);
 
   const total = sassCount + jsCount + copyCount;
-  console.log(`${config.logPrefix} Build completed: ${total} file${total > 1 ? "s" : ""}.`);
+  logBuild(config, "success", `Build completed: ${total} file${total > 1 ? "s" : ""}.`);
 
   return {
     config,

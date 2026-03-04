@@ -4,12 +4,13 @@ const fsPromises = require('node:fs/promises');
 const path = require('node:path');
 const livereload = require('livereload');
 const { normalizeBuildConfig, runBuild } = require('./build');
+const { formatLogLine, formatPath, supportsColor } = require('./log-format');
 
 const DEFAULT_MANIFEST_ROUTE = '/magic-file-code-injector.manifest.json';
 const DEFAULT_HOST = '127.0.0.1';
 const DEFAULT_PORT = 35888;
 const DEFAULT_PROJECT_NAME = 'magic-file-code-injector';
-const DEFAULT_LOG_PREFIX = '[mfci-server]';
+const DEFAULT_LOG_PREFIX = '[mfci]';
 const DEFAULT_IGNORED_DIRS = ['dev'];
 
 const DEFAULT_FILE_DEFINITIONS = [
@@ -159,6 +160,7 @@ function normalizeFileDefinition(definition, cwd) {
 function normalizeConfig(inputConfig = {}, options = {}) {
     const cwd = options.cwd || process.cwd();
     const source = inputConfig && typeof inputConfig === 'object' ? inputConfig : {};
+    const useColor = typeof options.useColor === 'boolean' ? options.useColor : supportsColor();
 
     const host =
         typeof source.host === 'string' && source.host.trim().length > 0 ?
@@ -199,6 +201,7 @@ function normalizeConfig(inputConfig = {}, options = {}) {
         manifestRoute,
         projectName,
         logPrefix,
+        useColor,
         fileDefinitions,
         watchDirs,
     };
@@ -214,6 +217,33 @@ function normalizeServerBuildConfig(inputConfig, cwd) {
     const source = inputConfig && typeof inputConfig === 'object' ? inputConfig : {};
     const buildSection = source.build && typeof source.build === 'object' ? source.build : {};
     return normalizeBuildConfig(buildSection, { cwd });
+}
+
+/**
+ * Build the watched extension list for LiveReload so source files in `css/dev` and `js/dev` trigger rebuilds.
+ * @param {any} config - Normalized runtime configuration for the current subsystem.
+ * @param {any} buildConfig - Normalized runtime configuration for the current subsystem.
+ * @returns {string[]} Extension list without dots (for example `scss`, `ts`, `css`, `js`).
+ */
+function collectWatchedExtensions(config, buildConfig) {
+    const extensions = new Set();
+
+    // Output extensions exposed to the extension UI/manifest.
+    for (const definition of config.fileDefinitions) {
+        for (const extension of definition.extensions) {
+            extensions.add(String(extension || '').toLowerCase().replace(/^\./, ''));
+        }
+    }
+
+    // Build source extensions that must trigger recompilation.
+    for (const extension of buildConfig.sass.extensions) {
+        extensions.add(String(extension || '').toLowerCase().replace(/^\./, ''));
+    }
+    for (const extension of buildConfig.js.extensions) {
+        extensions.add(String(extension || '').toLowerCase().replace(/^\./, ''));
+    }
+
+    return Array.from(extensions).filter(Boolean);
 }
 
 /**
@@ -283,6 +313,24 @@ function isBuildSourcePath(filePath, buildConfig) {
 }
 
 /**
+ * Check whether a changed file belongs to build outputs generated from dev sources.
+ * @param {any} filePath - Filesystem path or changed path used by the current operation.
+ * @param {any} buildConfig - Normalized runtime configuration for the current subsystem.
+ * @returns {boolean} True when path is inside configured Sass or JS output directories.
+ */
+function isBuildOutputPath(filePath, buildConfig) {
+    if (typeof filePath !== 'string' || filePath.length === 0) {
+        return false;
+    }
+
+    const absolutePath = path.resolve(filePath);
+    return (
+        isPathInsideOrSame(buildConfig.sass.outDir, absolutePath) ||
+        isPathInsideOrSame(buildConfig.js.outDir, absolutePath)
+    );
+}
+
+/**
  * Derive a scoped build config from one source change to avoid rebuilding unrelated asset types.
  * @param {any} buildConfig - Normalized runtime configuration for the current subsystem.
  * @param {any} sourcePath - Filesystem path or changed path used by the current operation.
@@ -320,6 +368,41 @@ function createScopedBuildConfig(buildConfig, sourcePath) {
  */
 function toForwardSlashes(value) {
     return value.split(path.sep).join('/');
+}
+
+/**
+ * Render filesystem paths in gray to keep log hierarchy focused on the action/result.
+ * @param {any} config - Normalized runtime configuration for the current subsystem.
+ * @param {any} inputPath - Filesystem path or changed path used by the current operation.
+ * @returns {string} Styled relative path for terminal output.
+ */
+function formatServerPath(config, inputPath) {
+    const absolutePath = path.resolve(String(inputPath || ''));
+    const relativePath = toForwardSlashes(path.relative(config.cwd, absolutePath) || '.');
+    return formatPath(relativePath, { useColor: config.useColor });
+}
+
+/**
+ * Emit one structured dev-server log line with level and prefix styling.
+ * @param {any} config - Normalized runtime configuration for the current subsystem.
+ * @param {'info'|'success'|'warn'|'error'} level - Severity level for hierarchy and colors.
+ * @param {any} message - Runtime message payload received from UI/content/background.
+ * @returns {void} Writes one formatted line to stdout/stderr.
+ */
+function logServer(config, level, message) {
+    const line = formatLogLine({
+        prefix: config.logPrefix,
+        level,
+        message: String(message || ''),
+        useColor: config.useColor,
+    });
+
+    if (level === 'error') {
+        console.error(line);
+        return;
+    }
+
+    console.log(line);
 }
 
 /**
@@ -558,10 +641,12 @@ function createHttpServer(config) {
 function startDevServer(inputConfig = {}, options = {}) {
     const config = normalizeConfig(inputConfig, options);
     const buildConfig = normalizeServerBuildConfig(inputConfig, config.cwd);
+    const watchedExtensions = collectWatchedExtensions(config, buildConfig);
     const buildRuntime = {
         isRunning: false,
         hasPendingRun: false,
     };
+    const pendingRefreshLogs = [];
 
     if (config.watchDirs.length === 0) {
         throw new Error(
@@ -575,8 +660,38 @@ function startDevServer(inputConfig = {}, options = {}) {
         host: config.host,
         port: config.port,
         applyCSSLive: true,
+        exts: watchedExtensions,
         server: httpServer,
     });
+
+    /**
+     * Log refresh actions immediately or queue them while a build run is active.
+     * @param {'info'|'success'|'warn'|'error'} level - Severity level for hierarchy and colors.
+     * @param {string} message - Refresh message to print in terminal.
+     * @returns {void} Logs now or stores for post-build flush.
+     */
+    function logRefreshAction(level, message) {
+        if (buildRuntime.isRunning) {
+            pendingRefreshLogs.push({ level, message });
+            return;
+        }
+
+        logServer(config, level, message);
+    }
+
+    /**
+     * Print queued refresh logs after build completion so CLI output reads in natural order.
+     * @returns {void} Flushes queued refresh lines.
+     */
+    function flushRefreshLogs() {
+        if (pendingRefreshLogs.length === 0) {
+            return;
+        }
+
+        for (const entry of pendingRefreshLogs.splice(0)) {
+            logServer(config, entry.level, entry.message);
+        }
+    }
 
     /**
      * Queue build execution to avoid overlapping runs when multiple source events happen quickly.
@@ -596,14 +711,23 @@ function startDevServer(inputConfig = {}, options = {}) {
             do {
                 buildRuntime.hasPendingRun = false;
                 const sourceLabel = typeof sourcePath === 'string' && sourcePath.length > 0 ? sourcePath : '(startup)';
-                console.log(`${config.logPrefix} Build trigger (${reason}): ${sourceLabel}`);
 
                 const scopedBuildConfig = createScopedBuildConfig(buildConfig, sourcePath);
-                await runBuild(scopedBuildConfig, { cwd: config.cwd });
+                const buildResult = await runBuild(scopedBuildConfig, {
+                    cwd: config.cwd,
+                    logger: () => {},
+                    useColor: config.useColor,
+                });
+                const totalBuilt = buildResult && buildResult.stats ? buildResult.stats.total : 0;
+                const sourceDetails =
+                    sourceLabel === '(startup)' ? sourceLabel : formatServerPath(config, sourceLabel);
+                logServer(config, 'success', `Build done (${reason}): ${totalBuilt} file(s) from ${sourceDetails}`);
+                flushRefreshLogs();
             } while (buildRuntime.hasPendingRun);
         } catch (error) {
             const message = String(error && error.message ? error.message : error);
-            console.error(`${config.logPrefix} Build failed: ${message}`);
+            logServer(config, 'error', `Build failed: ${message}`);
+            flushRefreshLogs();
         } finally {
             buildRuntime.isRunning = false;
         }
@@ -618,19 +742,36 @@ function startDevServer(inputConfig = {}, options = {}) {
             return;
         }
 
+        // Log refresh actions in terminal so developers can correlate file updates with browser behavior.
+        if (isBuildOutputPath(filePath, buildConfig)) {
+            const reloadType = inferReloadType(filePath);
+            if (reloadType === 'css') {
+                logRefreshAction('success', `CSS hot refresh signal sent: ${formatServerPath(config, filePath)}`);
+            } else if (reloadType === 'js') {
+                logRefreshAction(
+                    'success',
+                    `JS refresh signal sent: ${formatServerPath(config, filePath)} (extension may trigger full reload)`
+                );
+            } else {
+                logRefreshAction('info', `Refresh signal sent (${reloadType}): ${formatServerPath(config, filePath)}`);
+            }
+            return originalRefresh(filePath);
+        }
+
         const reloadType = inferReloadType(filePath);
-        console.log(`${config.logPrefix} Live change detected (${reloadType}): ${filePath}`);
+        logServer(config, 'info', `Live change detected (${reloadType}): ${formatServerPath(config, filePath)}`);
         return originalRefresh(filePath);
     };
 
     for (const watchDir of config.watchDirs) {
         lrServer.watch(watchDir);
-        console.log(`${config.logPrefix} Watching ${watchDir}`);
+        logServer(config, 'info', `Watching ${formatServerPath(config, watchDir)}`);
     }
 
-    console.log(`${config.logPrefix} HTTP + WS running on http://${config.host}:${config.port}`);
-    console.log(`${config.logPrefix} Manifest endpoint: http://${config.host}:${config.port}${config.manifestRoute}`);
-    console.log(`${config.logPrefix} WebSocket endpoint: ws://${config.host}:${config.port}/livereload`);
+    logServer(config, 'success', `HTTP + WS running on http://${config.host}:${config.port}`);
+    logServer(config, 'info', `Manifest endpoint: http://${config.host}:${config.port}${config.manifestRoute}`);
+    logServer(config, 'info', `WebSocket endpoint: ws://${config.host}:${config.port}/livereload`);
+    logServer(config, 'info', `Watching extensions: ${watchedExtensions.join(', ')}`);
     runBuildFromDevServer('startup', '').catch(() => {});
 
     const close = () => {

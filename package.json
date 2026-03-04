@@ -18,7 +18,7 @@
         "node": ">=18"
     },
     "scripts": {
-        "check": "node --check src/server.js && node --check src/cli.js && node --check src/build.js && node --check src/build-cli.js && node --check bin/mfci-dev-server.js && node --check bin/mfci-build.js"
+        "check": "node --check src/server.js && node --check src/cli.js && node --check src/build.js && node --check src/build-cli.js && node --check src/log-format.js && node --check bin/mfci-dev-server.js && node --check bin/mfci-build.js"
     },
     "author": "Yolanare",
     "license": "MIT",

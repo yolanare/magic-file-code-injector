@@ -850,7 +850,7 @@ async function handleSocketMessage(rawMessage) {
     }
 
     if (fileType === "css") {
-      const cssMessage = `[MFCI] CSS change detected (${formatChangedFileSummary(fileId, [])}). Refreshing styles.`;
+      const cssMessage = `[mfci] CSS hot refresh launched (${formatChangedFileSummary(fileId, [])}).`;
       const cssContext = { hostKey, fileType, fileId: fileId || null };
       console.info(cssMessage, { tabId: tab.id, ...cssContext });
       await logToTabConsole(tab.id, cssMessage, cssContext, "info");
@@ -859,7 +859,7 @@ async function handleSocketMessage(rawMessage) {
     }
 
     if (hostState.autoRefreshJs) {
-      const reloadMessage = `[MFCI] JS change detected (${formatChangedFileSummary(fileId, affectedJsIds)}). Auto-refresh is enabled, triggering full page reload.`;
+      const reloadMessage = `[mfci] Full page reload launched (JS auto-refresh, ${formatChangedFileSummary(fileId, affectedJsIds)}).`;
       const reloadContext = { hostKey, fileType, fileId: fileId || null, affectedJsIds };
       console.info(reloadMessage, { tabId: tab.id, ...reloadContext });
       await logToTabConsole(tab.id, reloadMessage, reloadContext, "info");
@@ -869,7 +869,7 @@ async function handleSocketMessage(rawMessage) {
       continue;
     }
 
-    const pendingMessage = `[MFCI] JS change detected (${formatChangedFileSummary(fileId, affectedJsIds)}). Auto-refresh is disabled, update pending until manual reload.`;
+    const pendingMessage = `[mfci] JS change detected (${formatChangedFileSummary(fileId, affectedJsIds)}). Auto-refresh is disabled, update pending until manual reload.`;
     const pendingContext = { hostKey, fileType, fileId: fileId || null, affectedJsIds };
     console.info(pendingMessage, { tabId: tab.id, ...pendingContext });
     await logToTabConsole(tab.id, pendingMessage, pendingContext, "info");
