@@ -472,19 +472,19 @@ async function getActiveTab() {
  * Synchronize one tab with current host configuration and manifest content.
  * @param {any} tabId - Chrome tab identifier to target.
  * @param {any} reason - Sync reason used for diagnostics and message tracing.
- * @returns {Promise<void>} Completes after best-effort tab synchronization.
+ * @returns {Promise<boolean>} True when sync payload is delivered to content script.
  */
 async function syncTab(tabId, reason) {
   let tab;
   try {
     tab = await tabGet(tabId);
   } catch (_error) {
-    return;
+    return false;
   }
 
   const hostKey = tab && tab.url ? getHostKey(tab.url) : null;
   if (!hostKey) {
-    return;
+    return false;
   }
 
   const state = await loadState();
@@ -499,16 +499,18 @@ async function syncTab(tabId, reason) {
       await saveState(state);
     }
 
-    await tabSendMessage(tabId, {
+    const delivery = await tabSendMessage(tabId, {
       type: "MFCI_APPLY_STATE",
       reason,
       ...payload,
     });
+    return delivery.ok === true;
   } catch (error) {
     if (hasStoredHostState) {
       state.hosts[hostKey].lastError = String(error.message || error);
       await saveState(state);
     }
+    return false;
   }
 }
 
@@ -936,9 +938,13 @@ async function updateHostFileSelection(message) {
 
   await saveState(state);
 
+  let synced = false;
   if (typeof message.tabId === "number") {
-    await syncTab(message.tabId, "selection-change");
-  } else {
+    synced = await syncTab(message.tabId, "selection-change");
+  }
+
+  if (!synced) {
+    // Fallback to currently active tab to keep CSS/JS toggle behavior immediate from popup.
     await applyToCurrentTab("selection-change");
   }
 
