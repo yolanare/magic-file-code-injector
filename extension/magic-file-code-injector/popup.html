@@ -10,7 +10,10 @@
     <main class="app">
       <header class="header">
         <h1>magic-file-code-injector</h1>
-        <button id="refresh-model" class="button button-secondary" type="button">Refresh</button>
+        <div class="header-actions">
+          <button id="open-options" class="button button-secondary" type="button">Options</button>
+          <button id="refresh-model" class="button button-secondary" type="button">Refresh</button>
+        </div>
       </header>
 
       <section class="panel">
@@ -23,14 +26,6 @@
           <span id="server-value" class="mono">-</span>
         </div>
         <div id="status-message" class="status"></div>
-      </section>
-
-      <section class="panel">
-        <form id="port-form" class="row-inline">
-          <label for="port-input">Port</label>
-          <input id="port-input" type="number" min="1" max="65535" required />
-          <button class="button" type="submit">Save</button>
-        </form>
       </section>
 
       <section class="panel">

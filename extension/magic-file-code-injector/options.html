@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>magic-file-code-injector - Options</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="header">
+        <h1>magic-file-code-injector - Global Options</h1>
+        <button id="refresh-options" class="button button-secondary" type="button">Refresh</button>
+      </header>
+
+      <section class="panel">
+        <h2>Server</h2>
+        <div class="row">
+          <span class="label">Origin</span>
+          <span id="server-origin" class="mono">-</span>
+        </div>
+        <div id="status-message" class="status"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Global Port</h2>
+        <form id="port-form" class="row-inline">
+          <label for="port-input">Port</label>
+          <input id="port-input" type="number" min="1" max="65535" required />
+          <button class="button" type="submit">Save</button>
+        </form>
+      </section>
+
+      <section class="panel">
+        <h2>Saved Site Settings</h2>
+        <div id="site-list" class="site-list"></div>
+      </section>
+
+      <section class="panel">
+        <details>
+          <summary>Raw saved settings</summary>
+          <pre id="raw-settings" class="raw-pre"></pre>
+        </details>
+      </section>
+    </main>
+
+    <script src="js/options.js"></script>
+  </body>
+</html>

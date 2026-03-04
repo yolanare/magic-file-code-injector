@@ -1,0 +1,171 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #f4f6fb;
+  color: #1a2233;
+}
+
+.app {
+  max-width: 880px;
+  margin: 20px auto;
+  padding: 0 16px 24px;
+  display: grid;
+  gap: 12px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+h1 {
+  margin: 0;
+  font-size: 20px;
+}
+
+h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.panel {
+  background: #fff;
+  border: 1px solid #dde4f1;
+  border-radius: 10px;
+  padding: 14px;
+  display: grid;
+  gap: 10px;
+}
+
+.row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.row-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.label {
+  color: #4b5975;
+}
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+input[type="number"] {
+  width: 110px;
+  border: 1px solid #cad4e8;
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 13px;
+}
+
+.button {
+  border: none;
+  border-radius: 6px;
+  background: #1669e8;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.button:hover {
+  background: #1257bf;
+}
+
+.button-secondary {
+  background: #ecf1fb;
+  color: #26324d;
+}
+
+.button-secondary:hover {
+  background: #dbe6fa;
+}
+
+.button-danger {
+  background: #d9363e;
+}
+
+.button-danger:hover {
+  background: #b72c33;
+}
+
+.status {
+  font-size: 12px;
+  color: #33415f;
+}
+
+.status-error {
+  color: #b42318;
+}
+
+.site-list {
+  display: grid;
+  gap: 8px;
+}
+
+.site-row {
+  border: 1px solid #dde4f1;
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  background: #fbfcff;
+}
+
+.site-meta {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.site-host {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.site-info {
+  font-size: 12px;
+  color: #516183;
+}
+
+details {
+  border: 1px solid #e1e7f4;
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: #fcfdff;
+}
+
+summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.raw-pre {
+  margin: 10px 0 0;
+  padding: 10px;
+  border-radius: 8px;
+  background: #121826;
+  color: #c8d6f0;
+  font-size: 12px;
+  overflow: auto;
+  max-height: 320px;
+}

@@ -22,6 +22,11 @@ body {
   justify-content: space-between;
 }
 
+.header-actions {
+  display: flex;
+  gap: 6px;
+}
+
 h1 {
   margin: 0;
   font-size: 15px;
@@ -48,12 +53,6 @@ h2 {
   font-size: 12px;
 }
 
-.row-inline {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
 .label {
   color: #4f5b72;
 }
@@ -65,14 +64,6 @@ h2 {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-input[type="number"] {
-  width: 90px;
-  border: 1px solid #c7d2e6;
-  border-radius: 6px;
-  padding: 4px 6px;
-  font-size: 12px;
 }
 
 .button {

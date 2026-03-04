@@ -247,8 +247,7 @@ async function fetchFileText(url) {
   return response.text();
 }
 
-async function buildSyncPayload(state, hostKey) {
-  const hostState = getOrCreateHostState(state, hostKey);
+async function buildSyncPayload(state, hostKey, hostState) {
   const manifest = await fetchManifest(state.global);
 
   const activeManifestFiles = manifest.files.filter((file) => hostState.enabledFileIds.includes(file.id));
@@ -292,11 +291,15 @@ async function syncTab(tabId, reason) {
   }
 
   const state = await loadState();
-  const hostState = getOrCreateHostState(state, hostKey);
+  const hasStoredHostState = Boolean(state.hosts[hostKey]);
+  const hostState = hasStoredHostState ? normalizeHostState(state.hosts[hostKey]) : { ...DEFAULT_HOST_STATE };
 
   try {
-    const payload = await buildSyncPayload(state, hostKey);
-    hostState.lastError = "";
+    const payload = await buildSyncPayload(state, hostKey, hostState);
+    if (hasStoredHostState) {
+      state.hosts[hostKey].lastError = "";
+      await saveState(state);
+    }
 
     await tabSendMessage(tabId, {
       type: "MFCI_APPLY_STATE",
@@ -304,10 +307,11 @@ async function syncTab(tabId, reason) {
       ...payload,
     });
   } catch (error) {
-    hostState.lastError = String(error.message || error);
+    if (hasStoredHostState) {
+      state.hosts[hostKey].lastError = String(error.message || error);
+      await saveState(state);
+    }
   }
-
-  await saveState(state);
 }
 
 async function clearPendingUpdatesForHost(hostKey) {
@@ -363,6 +367,37 @@ async function buildPopupModel() {
       websocketConnected: socketConnected,
       websocketError: socketError,
       error: serverError,
+    },
+  };
+}
+
+function sortedHostEntries(hosts) {
+  return Object.entries(hosts)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([hostKey, hostState]) => [hostKey, normalizeHostState(hostState)]);
+}
+
+async function buildOptionsModel() {
+  const state = await loadState();
+  const entries = sortedHostEntries(state.hosts);
+
+  const hosts = {};
+  for (const [hostKey, hostState] of entries) {
+    hosts[hostKey] = hostState;
+  }
+
+  return {
+    ok: true,
+    global: state.global,
+    hosts,
+    server: {
+      origin: getServerOrigin(state.global),
+      websocketConnected: socketConnected,
+      websocketError: socketError,
+    },
+    rawState: {
+      global: state.global,
+      hosts,
     },
   };
 }
@@ -524,6 +559,36 @@ async function updatePort(message) {
   return { ok: true };
 }
 
+async function deleteHostSettings(message) {
+  const hostKey = typeof message.hostKey === "string" ? message.hostKey.trim() : "";
+  if (!hostKey) {
+    return { ok: false, error: "Host key is required." };
+  }
+
+  const state = await loadState();
+  if (!state.hosts[hostKey]) {
+    return { ok: true };
+  }
+
+  delete state.hosts[hostKey];
+  await saveState(state);
+
+  const tabs = await tabsQuery({ url: ["http://*/*", "https://*/*"] });
+  for (const tab of tabs) {
+    if (typeof tab.id !== "number" || !tab.url) {
+      continue;
+    }
+
+    if (getHostKey(tab.url) !== hostKey) {
+      continue;
+    }
+
+    await syncTab(tab.id, "host-settings-deleted");
+  }
+
+  return { ok: true };
+}
+
 async function recordInjectionError(sender, message) {
   if (!sender || !sender.tab || !sender.tab.url) {
     return { ok: true };
@@ -550,12 +615,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     switch (message && message.type) {
       case "POPUP_GET_MODEL":
         return buildPopupModel();
+      case "OPTIONS_GET_MODEL":
+        return buildOptionsModel();
       case "POPUP_SET_ENABLED_FILES":
         return updateHostFileSelection(message);
       case "POPUP_SET_AUTO_REFRESH_JS":
         return updateAutoRefresh(message);
       case "POPUP_SET_PORT":
+      case "OPTIONS_SET_PORT":
         return updatePort(message);
+      case "OPTIONS_DELETE_HOST":
+        return deleteHostSettings(message);
       case "POPUP_FORCE_SYNC":
         await applyToCurrentTab("manual-sync");
         return { ok: true };

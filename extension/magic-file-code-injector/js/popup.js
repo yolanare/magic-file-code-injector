@@ -1,12 +1,11 @@
 const hostValueElement = document.getElementById("host-value");
 const serverValueElement = document.getElementById("server-value");
 const statusMessageElement = document.getElementById("status-message");
-const portFormElement = document.getElementById("port-form");
-const portInputElement = document.getElementById("port-input");
 const autoRefreshJsElement = document.getElementById("auto-refresh-js");
 const pendingJsElement = document.getElementById("pending-js");
 const filesListElement = document.getElementById("files-list");
 const refreshButtonElement = document.getElementById("refresh-model");
+const openOptionsButtonElement = document.getElementById("open-options");
 
 let model = null;
 
@@ -88,7 +87,6 @@ function render() {
 
   hostValueElement.textContent = model.hostKey || "No active web page";
   serverValueElement.textContent = model.server.origin;
-  portInputElement.value = model.global.port;
 
   const serverProblems = [];
   if (model.server.error) {
@@ -156,20 +154,6 @@ async function refreshModel() {
   }
 }
 
-portFormElement.addEventListener("submit", async (event) => {
-  event.preventDefault();
-
-  const port = Number(portInputElement.value);
-  const response = await sendMessage({ type: "POPUP_SET_PORT", port });
-
-  if (!response || response.ok !== true) {
-    setStatus((response && response.error) || "Unable to update port.", true);
-    return;
-  }
-
-  await refreshModel();
-});
-
 autoRefreshJsElement.addEventListener("change", async () => {
   if (!model || !model.hostKey) {
     return;
@@ -187,6 +171,10 @@ autoRefreshJsElement.addEventListener("change", async () => {
 refreshButtonElement.addEventListener("click", async () => {
   await sendMessage({ type: "POPUP_FORCE_SYNC" });
   await refreshModel();
+});
+
+openOptionsButtonElement.addEventListener("click", () => {
+  chrome.runtime.openOptionsPage();
 });
 
 refreshModel();
