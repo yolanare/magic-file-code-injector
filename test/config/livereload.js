@@ -1,16 +1,15 @@
 const http = require("node:http");
-const path = require("node:path");
 const fs = require("node:fs");
 const fsPromises = require("node:fs/promises");
-const chokidar = require("chokidar");
-const { WebSocketServer } = require("ws");
+const path = require("node:path");
+const livereload = require("livereload");
 
-const HOST = process.env.MFCI_HOST || "127.0.0.1";
-const PORT = Number(process.env.MFCI_PORT || process.env.LIVERELOAD_PORT || 35888);
+const HOST = process.env.LR_HOST || process.env.MFCI_HOST || "127.0.0.1";
+const PORT = Number(process.env.LR_PORT || process.env.MFCI_PORT || 35888);
 const PROJECT_ROOT = process.cwd();
 const MANIFEST_ROUTE = "/magic-file-code-injector.manifest.json";
 
-const WATCH_DEFINITIONS = [
+const FILE_DEFINITIONS = [
   {
     type: "css",
     urlPrefix: "/css/dist",
@@ -34,14 +33,18 @@ const MIME_TYPES = {
   ".txt": "text/plain; charset=utf-8",
 };
 
-function toUrlPath(fsPath, definition) {
-  const relative = path.relative(definition.fsRoot, fsPath).split(path.sep).join("/");
-  return `${definition.urlPrefix}/${relative}`;
+function isPathInside(basePath, targetPath) {
+  const relativePath = path.relative(basePath, targetPath);
+  return relativePath !== "" && !relativePath.startsWith("..") && !path.isAbsolute(relativePath);
 }
 
-function isPathInside(basePath, targetPath) {
-  const relative = path.relative(basePath, targetPath);
-  return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
+function toForwardSlashes(value) {
+  return value.split(path.sep).join("/");
+}
+
+function toUrlPath(fsPath, definition) {
+  const relativePath = toForwardSlashes(path.relative(definition.fsRoot, fsPath));
+  return `${definition.urlPrefix}/${relativePath}`;
 }
 
 function inferScriptType(urlPath) {
@@ -111,7 +114,7 @@ function buildDescriptor(definition, absolutePath) {
 async function buildManifest() {
   const files = [];
 
-  for (const definition of WATCH_DEFINITIONS) {
+  for (const definition of FILE_DEFINITIONS) {
     const discoveredFiles = await walkDirectory(definition.fsRoot);
 
     for (const absolutePath of discoveredFiles) {
@@ -136,19 +139,6 @@ async function buildManifest() {
   };
 }
 
-function resolveDescriptorFromWatchedPath(filePath) {
-  const normalizedPath = path.resolve(filePath);
-
-  for (const definition of WATCH_DEFINITIONS) {
-    const descriptor = buildDescriptor(definition, normalizedPath);
-    if (descriptor) {
-      return descriptor;
-    }
-  }
-
-  return null;
-}
-
 function writeJson(res, statusCode, payload) {
   res.writeHead(statusCode, {
     "Content-Type": "application/json; charset=utf-8",
@@ -167,7 +157,7 @@ function writeText(res, statusCode, payload) {
   res.end(payload);
 }
 
-const server = http.createServer(async (req, res) => {
+const httpServer = http.createServer(async (req, res) => {
   try {
     const requestUrl = new URL(req.url || "/", `http://${HOST}:${PORT}`);
     const pathname = decodeURIComponent(requestUrl.pathname);
@@ -178,7 +168,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    const definition = WATCH_DEFINITIONS.find((item) => pathname === item.urlPrefix || pathname.startsWith(`${item.urlPrefix}/`));
+    const definition = FILE_DEFINITIONS.find((item) => pathname === item.urlPrefix || pathname.startsWith(`${item.urlPrefix}/`));
     if (!definition) {
       writeText(res, 404, "Not Found");
       return;
@@ -214,82 +204,55 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-const wss = new WebSocketServer({ noServer: true });
+const requestedWatchDirs = (process.env.LR_WATCH_DIRS || "")
+  .split(",")
+  .map((directory) => directory.trim())
+  .filter(Boolean)
+  .map((directory) => path.resolve(PROJECT_ROOT, directory));
 
-function broadcast(payload) {
-  const serialized = JSON.stringify(payload);
+const defaultWatchDirs = [
+  path.resolve(PROJECT_ROOT, "css/dist"),
+  path.resolve(PROJECT_ROOT, "js"),
+  path.resolve(PROJECT_ROOT, "dist"),
+];
 
-  for (const client of wss.clients) {
-    if (client.readyState === 1) {
-      client.send(serialized);
-    }
+const watchDirs = (requestedWatchDirs.length > 0 ? requestedWatchDirs : defaultWatchDirs).filter((directoryPath) => fs.existsSync(directoryPath));
+
+if (watchDirs.length === 0) {
+  console.error("[mfci-server] No watch directory found. Checked: css/dist, js, dist");
+  process.exit(1);
+}
+
+const lrServer = livereload.createServer({
+  host: HOST,
+  port: PORT,
+  applyCSSLive: true,
+  server: httpServer,
+});
+
+for (const watchDir of watchDirs) {
+  lrServer.watch(watchDir);
+  console.log(`[mfci-server] Watching ${watchDir}`);
+}
+
+console.log(`[mfci-server] HTTP + WS running on http://${HOST}:${PORT}`);
+console.log(`[mfci-server] Manifest endpoint: http://${HOST}:${PORT}${MANIFEST_ROUTE}`);
+console.log(`[mfci-server] WebSocket endpoint: ws://${HOST}:${PORT}/livereload`);
+
+function shutdown() {
+  try {
+    lrServer.close();
+  } catch (_error) {
+    // Ignore shutdown errors.
   }
 }
 
-server.on("upgrade", (request, socket, head) => {
-  const requestUrl = new URL(request.url || "/", `http://${HOST}:${PORT}`);
-
-  if (requestUrl.pathname !== "/livereload") {
-    socket.destroy();
-    return;
-  }
-
-  wss.handleUpgrade(request, socket, head, (client) => {
-    wss.emit("connection", client, request);
-  });
+process.on("SIGINT", () => {
+  shutdown();
+  process.exit(0);
 });
 
-wss.on("connection", (client) => {
-  client.send(
-    JSON.stringify({
-      type: "connected",
-      timestamp: Date.now(),
-    })
-  );
-});
-
-const watchTargets = WATCH_DEFINITIONS.map((definition) => `${definition.fsRoot}/**/*`);
-const watcher = chokidar.watch(watchTargets, {
-  ignoreInitial: true,
-  awaitWriteFinish: {
-    stabilityThreshold: 80,
-    pollInterval: 20,
-  },
-});
-
-watcher.on("all", (eventName, changedPath) => {
-  const descriptor = resolveDescriptorFromWatchedPath(changedPath);
-  if (!descriptor) {
-    return;
-  }
-
-  broadcast({
-    type: "file-changed",
-    event: eventName,
-    fileId: descriptor.id,
-    fileType: descriptor.type,
-    path: descriptor.path,
-    timestamp: Date.now(),
-  });
-
-  if (["add", "addDir", "unlink", "unlinkDir"].includes(eventName)) {
-    broadcast({
-      type: "manifest-updated",
-      timestamp: Date.now(),
-    });
-  }
-});
-
-server.listen(PORT, HOST, () => {
-  console.log(`[mfci-server] HTTP + WS running on http://${HOST}:${PORT}`);
-  console.log(`[mfci-server] Manifest endpoint: http://${HOST}:${PORT}${MANIFEST_ROUTE}`);
-  console.log(`[mfci-server] WebSocket endpoint: ws://${HOST}:${PORT}/livereload`);
-});
-
-process.on("SIGINT", async () => {
-  await watcher.close();
-  wss.close();
-  server.close(() => {
-    process.exit(0);
-  });
+process.on("SIGTERM", () => {
+  shutdown();
+  process.exit(0);
 });

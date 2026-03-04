@@ -3,7 +3,6 @@
   const STYLE_HASH_ATTR = "data-mfci-style-hash";
   const SCRIPT_ATTR = "data-mfci-script-id";
   const SCRIPT_HASH_ATTR = "data-mfci-script-hash";
-  const SCRIPT_BLOB_ATTR = "data-mfci-script-blob-url";
 
   const executedScriptHashes = new Map();
 
@@ -31,12 +30,17 @@
   }
 
   function removeScriptElement(scriptElement) {
-    const blobUrl = scriptElement.getAttribute(SCRIPT_BLOB_ATTR);
-    if (blobUrl) {
-      URL.revokeObjectURL(blobUrl);
-    }
-
     scriptElement.remove();
+  }
+
+  function appendHashToUrl(urlValue, contentHash) {
+    try {
+      const parsedUrl = new URL(urlValue, window.location.href);
+      parsedUrl.searchParams.set("mfci_hash", contentHash);
+      return parsedUrl.toString();
+    } catch (_error) {
+      return `${urlValue}${urlValue.includes("?") ? "&" : "?"}mfci_hash=${encodeURIComponent(contentHash)}`;
+    }
   }
 
   function notifyScriptError(fileId, errorMessage) {
@@ -96,18 +100,17 @@
       scriptElement.type = "module";
     }
 
-    const sourceLabel = typeof file.url === "string" && file.url.length > 0 ? file.url : file.path || file.id;
-    const source = `${content}\n//# sourceURL=${sourceLabel}`;
+    const sourceUrl = typeof file.url === "string" && file.url.length > 0 ? file.url : "";
+    if (!sourceUrl) {
+      notifyScriptError(file.id, "Missing JavaScript URL.");
+      return;
+    }
 
-    const blob = new Blob([source], { type: "text/javascript" });
-    const blobUrl = URL.createObjectURL(blob);
-
-    scriptElement.src = blobUrl;
-    scriptElement.setAttribute(SCRIPT_BLOB_ATTR, blobUrl);
+    scriptElement.src = appendHashToUrl(sourceUrl, contentHash);
     scriptElement.async = false;
 
     scriptElement.addEventListener("error", () => {
-      notifyScriptError(file.id, "Execution failed. The page CSP may block this script.");
+      notifyScriptError(file.id, "Execution failed. Check CSP and local server availability.");
     });
 
     rootNode.appendChild(scriptElement);

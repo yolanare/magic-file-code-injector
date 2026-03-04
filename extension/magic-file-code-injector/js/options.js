@@ -3,7 +3,6 @@ const serverOriginElement = document.getElementById("server-origin");
 const portFormElement = document.getElementById("port-form");
 const portInputElement = document.getElementById("port-input");
 const siteListElement = document.getElementById("site-list");
-const rawSettingsElement = document.getElementById("raw-settings");
 const refreshOptionsElement = document.getElementById("refresh-options");
 
 let model = null;
@@ -27,9 +26,43 @@ function setStatus(message, isError) {
   statusMessageElement.classList.toggle("status-error", isError);
 }
 
+function createEnabledFilesBlock(enabledFileIds) {
+  const block = document.createElement("div");
+  block.className = "enabled-files";
+
+  const title = document.createElement("div");
+  title.className = "enabled-files-title";
+  title.textContent = "Enabled files";
+  block.appendChild(title);
+
+  if (!enabledFileIds || enabledFileIds.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "enabled-files-empty";
+    empty.textContent = "No file enabled.";
+    block.appendChild(empty);
+    return block;
+  }
+
+  const list = document.createElement("ul");
+  list.className = "enabled-files-list";
+
+  for (const fileId of enabledFileIds) {
+    const item = document.createElement("li");
+    item.className = "mono";
+    item.textContent = fileId;
+    list.appendChild(item);
+  }
+
+  block.appendChild(list);
+  return block;
+}
+
 function createSiteRow(hostKey, hostState) {
   const row = document.createElement("div");
   row.className = "site-row";
+
+  const top = document.createElement("div");
+  top.className = "site-row-top";
 
   const meta = document.createElement("div");
   meta.className = "site-meta";
@@ -40,11 +73,7 @@ function createSiteRow(hostKey, hostState) {
 
   const info = document.createElement("div");
   info.className = "site-info";
-  info.textContent = [
-    `enabled: ${(hostState.enabledFileIds || []).length}`,
-    `autoRefreshJs: ${hostState.autoRefreshJs === true ? "true" : "false"}`,
-    `pendingJs: ${(hostState.pendingJsUpdateIds || []).length}`,
-  ].join(" | ");
+  info.textContent = `autoRefreshJs: ${hostState.autoRefreshJs === true ? "true" : "false"}`;
 
   meta.appendChild(host);
   meta.appendChild(info);
@@ -72,8 +101,11 @@ function createSiteRow(hostKey, hostState) {
     await refreshModel();
   });
 
-  row.appendChild(meta);
-  row.appendChild(removeButton);
+  top.appendChild(meta);
+  top.appendChild(removeButton);
+
+  row.appendChild(top);
+  row.appendChild(createEnabledFilesBlock(hostState.enabledFileIds || []));
 
   return row;
 }
@@ -112,7 +144,6 @@ function render() {
   }
 
   renderSites(model.hosts || {});
-  rawSettingsElement.textContent = JSON.stringify(model.rawState || {}, null, 2);
 }
 
 async function refreshModel() {

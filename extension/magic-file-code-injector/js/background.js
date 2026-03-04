@@ -22,6 +22,12 @@ let socketConnected = false;
 let socketError = "";
 let reconnectTimer = null;
 
+const LR_PROTOCOLS = [
+  "http://livereload.com/protocols/official-7",
+  "http://livereload.com/protocols/official-8",
+  "http://livereload.com/protocols/official-9",
+];
+
 function uniqueStrings(values) {
   return Array.from(new Set(values.filter((value) => typeof value === "string")));
 }
@@ -65,6 +71,50 @@ function getServerOrigin(globalState) {
 
 function getManifestUrl(globalState) {
   return `${getServerOrigin(globalState)}${MANIFEST_ROUTE}`;
+}
+
+function normalizeChangedPath(value) {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    return "";
+  }
+
+  let normalized = value.trim().replace(/\\/g, "/");
+
+  try {
+    normalized = new URL(normalized).pathname;
+  } catch (_error) {
+    // Keep original value when not a full URL.
+  }
+
+  const hashIndex = normalized.indexOf("#");
+  if (hashIndex >= 0) {
+    normalized = normalized.slice(0, hashIndex);
+  }
+
+  const queryIndex = normalized.indexOf("?");
+  if (queryIndex >= 0) {
+    normalized = normalized.slice(0, queryIndex);
+  }
+
+  if (!normalized.startsWith("/")) {
+    normalized = `/${normalized}`;
+  }
+
+  return normalized.toLowerCase();
+}
+
+function inferFileTypeFromPath(value) {
+  const normalized = normalizeChangedPath(value);
+
+  if (normalized.endsWith(".css")) {
+    return "css";
+  }
+
+  if (normalized.endsWith(".js") || normalized.endsWith(".mjs")) {
+    return "js";
+  }
+
+  return "";
 }
 
 function getHostKey(urlValue) {
@@ -377,13 +427,21 @@ function sortedHostEntries(hosts) {
     .map(([hostKey, hostState]) => [hostKey, normalizeHostState(hostState)]);
 }
 
+function toOptionsHostState(hostState) {
+  const normalized = normalizeHostState(hostState);
+  return {
+    enabledFileIds: normalized.enabledFileIds,
+    autoRefreshJs: normalized.autoRefreshJs,
+  };
+}
+
 async function buildOptionsModel() {
   const state = await loadState();
   const entries = sortedHostEntries(state.hosts);
 
   const hosts = {};
   for (const [hostKey, hostState] of entries) {
-    hosts[hostKey] = hostState;
+    hosts[hostKey] = toOptionsHostState(hostState);
   }
 
   return {
@@ -394,10 +452,6 @@ async function buildOptionsModel() {
       origin: getServerOrigin(state.global),
       websocketConnected: socketConnected,
       websocketError: socketError,
-    },
-    rawState: {
-      global: state.global,
-      hosts,
     },
   };
 }
@@ -436,6 +490,18 @@ async function connectSocket() {
   socket.addEventListener("open", () => {
     socketConnected = true;
     socketError = "";
+
+    try {
+      socket.send(
+        JSON.stringify({
+          command: "hello",
+          protocols: LR_PROTOCOLS,
+          ver: "3.0.0",
+        })
+      );
+    } catch (_error) {
+      // Ignore handshake failures and keep listening.
+    }
   });
 
   socket.addEventListener("error", () => {
@@ -461,18 +527,56 @@ async function handleSocketMessage(rawMessage) {
     return;
   }
 
-  if (!payload || payload.type !== "file-changed") {
-    return;
-  }
-
-  const fileId = typeof payload.fileId === "string" ? payload.fileId : "";
-  const fileType = payload.fileType === "css" || payload.fileType === "js" ? payload.fileType : "";
-  if (!fileId || !fileType) {
+  if (!payload || typeof payload !== "object") {
     return;
   }
 
   const state = await loadState();
+
+  let fileId = "";
+  let fileType = "";
+  let manifest = null;
+
+  if (payload.type === "file-changed") {
+    fileId = typeof payload.fileId === "string" ? payload.fileId : "";
+    fileType = payload.fileType === "css" || payload.fileType === "js" ? payload.fileType : "";
+  } else if (payload.command === "reload") {
+    const changedPath = typeof payload.path === "string" ? payload.path : "";
+    fileType = inferFileTypeFromPath(changedPath);
+
+    if (fileType) {
+      try {
+        manifest = await fetchManifest(state.global);
+      } catch (_error) {
+        manifest = null;
+      }
+
+      if (manifest) {
+        const normalizedChangedPath = normalizeChangedPath(changedPath);
+        for (const candidate of manifest.files) {
+          if (candidate.type !== fileType) {
+            continue;
+          }
+
+          const normalizedManifestPath = normalizeChangedPath(candidate.path);
+          if (
+            normalizedChangedPath === normalizedManifestPath ||
+            normalizedChangedPath.endsWith(normalizedManifestPath)
+          ) {
+            fileId = candidate.id;
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  if (!fileType) {
+    return;
+  }
+
   const tabs = await tabsQuery({ url: ["http://*/*", "https://*/*"] });
+  const manifestTypeById = new Map((manifest ? manifest.files : []).map((file) => [file.id, file.type]));
 
   let stateChanged = false;
 
@@ -487,7 +591,34 @@ async function handleSocketMessage(rawMessage) {
     }
 
     const hostState = state.hosts[hostKey];
-    if (!hostState || !hostState.enabledFileIds.includes(fileId)) {
+    if (!hostState) {
+      continue;
+    }
+
+    let affectedJsIds = [];
+    let isAffected = false;
+
+    if (fileId) {
+      isAffected = hostState.enabledFileIds.includes(fileId);
+      if (isAffected && fileType === "js") {
+        affectedJsIds = [fileId];
+      }
+    } else {
+      const enabledIdsForType = hostState.enabledFileIds.filter((enabledId) => {
+        if (enabledId.startsWith(`${fileType}:`)) {
+          return true;
+        }
+
+        return manifestTypeById.get(enabledId) === fileType;
+      });
+
+      isAffected = enabledIdsForType.length > 0;
+      if (fileType === "js") {
+        affectedJsIds = enabledIdsForType;
+      }
+    }
+
+    if (!isAffected) {
       continue;
     }
 
@@ -501,9 +632,11 @@ async function handleSocketMessage(rawMessage) {
       continue;
     }
 
-    if (!hostState.pendingJsUpdateIds.includes(fileId)) {
-      hostState.pendingJsUpdateIds.push(fileId);
-      stateChanged = true;
+    for (const pendingId of affectedJsIds) {
+      if (!hostState.pendingJsUpdateIds.includes(pendingId)) {
+        hostState.pendingJsUpdateIds.push(pendingId);
+        stateChanged = true;
+      }
     }
   }
 

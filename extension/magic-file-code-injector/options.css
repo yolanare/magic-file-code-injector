@@ -123,11 +123,16 @@ input[type="number"] {
   border: 1px solid #dde4f1;
   border-radius: 8px;
   padding: 8px 10px;
+  display: grid;
+  gap: 10px;
+  background: #fbfcff;
+}
+
+.site-row-top {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  background: #fbfcff;
 }
 
 .site-meta {
@@ -146,26 +151,29 @@ input[type="number"] {
   color: #516183;
 }
 
-details {
-  border: 1px solid #e1e7f4;
-  border-radius: 8px;
-  padding: 8px 10px;
-  background: #fcfdff;
+.enabled-files {
+  border-top: 1px solid #e4eaf7;
+  padding-top: 8px;
+  display: grid;
+  gap: 6px;
 }
 
-summary {
-  cursor: pointer;
+.enabled-files-title {
+  font-size: 11px;
   font-weight: 600;
-  font-size: 13px;
+  color: #4c5a79;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
-.raw-pre {
-  margin: 10px 0 0;
-  padding: 10px;
-  border-radius: 8px;
-  background: #121826;
-  color: #c8d6f0;
+.enabled-files-empty {
   font-size: 12px;
-  overflow: auto;
-  max-height: 320px;
+  color: #6a7794;
+}
+
+.enabled-files-list {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 4px;
 }
