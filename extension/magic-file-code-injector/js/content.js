@@ -112,9 +112,10 @@
   /**
    * Apply or refresh one CSS file in-place without full page reload.
    * @param {any} file - Manifest or build file descriptor currently processed.
+   * @param {any} syncReason - Sync reason used for diagnostics and message tracing.
    * @returns {void} Applies or refreshes one CSS file in DOM.
    */
-  function applyCssFile(file) {
+  function applyCssFile(file, syncReason) {
     const rootNode = getRootNode();
     if (!rootNode) {
       return;
@@ -134,6 +135,11 @@
       styleElement.textContent = content;
       styleElement.setAttribute(STYLE_HASH_ATTR, contentHash);
       logToPageConsole("info", `[mfci] CSS refreshed: ${file.id}`);
+      return;
+    }
+
+    if (syncReason === "css-change") {
+      logToPageConsole("info", `[mfci] CSS unchanged: ${file.id}`);
     }
   }
 
@@ -244,6 +250,8 @@
    */
   function applyState(payload) {
     const files = Array.isArray(payload.files) ? payload.files : [];
+    const syncReason = typeof payload.reason === "string" ? payload.reason : "";
+    const isPartial = payload.partial === true;
 
     const desiredCssIds = new Set();
     const desiredJsIds = new Set();
@@ -256,7 +264,7 @@
       // Keep desired IDs in sets first, then cleanup in one pass to avoid flickering removals.
       if (file.type === "css") {
         desiredCssIds.add(file.id);
-        applyCssFile(file);
+        applyCssFile(file, syncReason);
         continue;
       }
 
@@ -264,6 +272,11 @@
         desiredJsIds.add(file.id);
         executeJsFile(file);
       }
+    }
+
+    if (isPartial) {
+      // Partial sync applies only changed files and keeps existing injected state untouched.
+      return;
     }
 
     cleanupFiles(desiredCssIds, desiredJsIds);

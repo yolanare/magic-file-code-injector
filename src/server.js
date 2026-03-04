@@ -717,11 +717,16 @@ function startDevServer(inputConfig = {}, options = {}) {
                     cwd: config.cwd,
                     logger: () => {},
                     useColor: config.useColor,
+                    changedSourcePath: sourcePath,
                 });
-                const totalBuilt = buildResult && buildResult.stats ? buildResult.stats.total : 0;
                 const sourceDetails =
                     sourceLabel === '(startup)' ? sourceLabel : formatServerPath(config, sourceLabel);
-                logServer(config, 'success', `Build done (${reason}): ${totalBuilt} file(s) from ${sourceDetails}`);
+                if (reason === 'source-change' && sourceLabel !== '(startup)') {
+                    logServer(config, 'success', `Build done: ${sourceDetails}`);
+                } else {
+                    const totalBuilt = buildResult && buildResult.stats ? buildResult.stats.total : 0;
+                    logServer(config, 'success', `Build done (${reason}): ${totalBuilt} file(s) from ${sourceDetails}`);
+                }
                 flushRefreshLogs();
             } while (buildRuntime.hasPendingRun);
         } catch (error) {

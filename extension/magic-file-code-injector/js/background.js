@@ -158,6 +158,24 @@ function inferFileTypeFromPath(value) {
 }
 
 /**
+ * Extract and normalize the path segment from a manifest file id (`type:/path/file.ext`).
+ * @param {any} fileId - Stable manifest file identifier (type:path).
+ * @returns {string} Normalized path segment, or empty string when id is malformed.
+ */
+function normalizePathFromFileId(fileId) {
+  if (typeof fileId !== "string") {
+    return "";
+  }
+
+  const separatorIndex = fileId.indexOf(":");
+  if (separatorIndex < 0) {
+    return "";
+  }
+
+  return normalizeChangedPath(fileId.slice(separatorIndex + 1));
+}
+
+/**
  * Extract a stable host key from a tab URL for per-domain settings storage.
  * @param {any} urlValue - URL-like value to parse or normalize.
  * @returns {string|null} Host key for persisted settings, or null for unsupported URLs.
@@ -431,16 +449,21 @@ async function fetchFileText(url) {
  * @param {any} state - Full normalized extension state object.
  * @param {any} hostKey - Domain key used to isolate per-site settings.
  * @param {any} hostState - Per-site configuration including enabled files and JS refresh mode.
+ * @param {any} options - Optional sync filters used for partial update delivery.
  * @returns {Promise<object>} Payload sent to content script for tab sync.
  */
-async function buildSyncPayload(state, hostKey, hostState) {
+async function buildSyncPayload(state, hostKey, hostState, options = {}) {
   const manifest = await fetchManifest(state.global);
 
   // Only ship currently enabled files to content scripts to keep injection minimal.
   const activeManifestFiles = manifest.files.filter((file) => hostState.enabledFileIds.includes(file.id));
+  const requestedFileIds = uniqueStrings(Array.isArray(options.fileIds) ? options.fileIds : []);
+  const requestedSet = new Set(requestedFileIds);
+  const isPartial = requestedSet.size > 0;
+  const filesToSync = isPartial ? activeManifestFiles.filter((file) => requestedSet.has(file.id)) : activeManifestFiles;
 
   const files = [];
-  for (const file of activeManifestFiles) {
+  for (const file of filesToSync) {
     const url = resolveFileUrl(file, manifest.origin);
     const content = await fetchFileText(url);
 
@@ -454,6 +477,7 @@ async function buildSyncPayload(state, hostKey, hostState) {
   return {
     hostKey,
     files,
+    partial: isPartial,
     manifestGeneratedAt: manifest.generatedAt,
     pendingJsUpdateIds: hostState.pendingJsUpdateIds,
   };
@@ -472,9 +496,10 @@ async function getActiveTab() {
  * Synchronize one tab with current host configuration and manifest content.
  * @param {any} tabId - Chrome tab identifier to target.
  * @param {any} reason - Sync reason used for diagnostics and message tracing.
+ * @param {any} options - Optional sync filters used for partial update delivery.
  * @returns {Promise<boolean>} True when sync payload is delivered to content script.
  */
-async function syncTab(tabId, reason) {
+async function syncTab(tabId, reason, options = {}) {
   let tab;
   try {
     tab = await tabGet(tabId);
@@ -492,7 +517,7 @@ async function syncTab(tabId, reason) {
   const hostState = hasStoredHostState ? normalizeHostState(state.hosts[hostKey]) : { ...DEFAULT_HOST_STATE };
 
   try {
-    const payload = await buildSyncPayload(state, hostKey, hostState);
+    const payload = await buildSyncPayload(state, hostKey, hostState, options);
     if (hasStoredHostState) {
       // Keep error state clean once a successful sync occurred for this host.
       state.hosts[hostKey].lastError = "";
@@ -814,6 +839,7 @@ async function handleSocketMessage(rawMessage) {
 
   let fileId = "";
   let fileType = "";
+  let normalizedChangedPath = "";
   let manifest = null;
 
   if (payload.type === "file-changed") {
@@ -821,6 +847,7 @@ async function handleSocketMessage(rawMessage) {
     fileType = payload.fileType === "css" || payload.fileType === "js" ? payload.fileType : "";
   } else if (payload.command === "reload") {
     const changedPath = typeof payload.path === "string" ? payload.path : "";
+    normalizedChangedPath = normalizeChangedPath(changedPath);
     fileType = inferFileTypeFromPath(changedPath);
 
     if (fileType) {
@@ -831,7 +858,6 @@ async function handleSocketMessage(rawMessage) {
       }
 
       if (manifest) {
-        const normalizedChangedPath = normalizeChangedPath(changedPath);
         // Match incoming changed path against current manifest paths to resolve the exact file id when possible.
         for (const candidate of manifest.files) {
           if (candidate.type !== fileType) {
@@ -875,16 +901,18 @@ async function handleSocketMessage(rawMessage) {
       continue;
     }
 
+    let affectedIds = [];
     let affectedJsIds = [];
+    let affectedCssIds = [];
     let isAffected = false;
 
     if (fileId) {
       isAffected = hostState.enabledFileIds.includes(fileId);
-      if (isAffected && fileType === "js") {
-        affectedJsIds = [fileId];
+      if (isAffected) {
+        affectedIds = [fileId];
       }
     } else {
-      const enabledIdsForType = hostState.enabledFileIds.filter((enabledId) => {
+      let enabledIdsForType = hostState.enabledFileIds.filter((enabledId) => {
         if (enabledId.startsWith(`${fileType}:`)) {
           return true;
         }
@@ -892,10 +920,31 @@ async function handleSocketMessage(rawMessage) {
         return manifestTypeById.get(enabledId) === fileType;
       });
 
-      isAffected = enabledIdsForType.length > 0;
-      if (fileType === "js") {
-        affectedJsIds = enabledIdsForType;
+      // Prefer path-based matching so one LiveReload event targets only the changed enabled file(s).
+      if (normalizedChangedPath) {
+        const matchedByPath = enabledIdsForType.filter((enabledId) => {
+          const normalizedEnabledPath = normalizePathFromFileId(enabledId);
+          return (
+            normalizedChangedPath === normalizedEnabledPath ||
+            normalizedChangedPath.endsWith(normalizedEnabledPath)
+          );
+        });
+
+        if (matchedByPath.length > 0) {
+          enabledIdsForType = matchedByPath;
+        }
       }
+
+      isAffected = enabledIdsForType.length > 0;
+      affectedIds = enabledIdsForType;
+    }
+
+    if (fileType === "js") {
+      affectedJsIds = affectedIds;
+    }
+
+    if (fileType === "css") {
+      affectedCssIds = affectedIds;
     }
 
     if (!isAffected) {
@@ -903,7 +952,7 @@ async function handleSocketMessage(rawMessage) {
     }
 
     if (fileType === "css") {
-      await syncTab(tab.id, "css-change");
+      await syncTab(tab.id, "css-change", { fileIds: affectedCssIds });
       continue;
     }
 

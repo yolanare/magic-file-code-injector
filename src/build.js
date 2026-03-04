@@ -146,11 +146,13 @@ function normalizeBuildConfig(inputConfig = {}, options = {}) {
   const source = inputConfig && typeof inputConfig === "object" ? inputConfig : {};
   const logger = typeof options.logger === "function" ? options.logger : console.log;
   const useColor = typeof options.useColor === "boolean" ? options.useColor : supportsColor();
+  const changedSourcePath = isNonEmptyString(options.changedSourcePath) ? path.resolve(options.changedSourcePath) : "";
 
   return {
     cwd,
     logger,
     useColor,
+    changedSourcePath,
     logPrefix: isNonEmptyString(source.logPrefix) ? source.logPrefix.trim() : DEFAULT_BUILD_LOG_PREFIX,
     clean: normalizeBoolean(source.clean, false),
     sass: normalizeSassConfig(source.sass, cwd),
@@ -349,14 +351,23 @@ async function runSassBuild(config) {
     return sassConfig.extensions.has(extension);
   });
 
-  if (candidates.length === 0) {
+  let scopedCandidates = candidates;
+  if (config.changedSourcePath && isPathInsideOrSame(sassConfig.srcDir, config.changedSourcePath)) {
+    const changedExtension = path.extname(config.changedSourcePath).toLowerCase();
+    const isSassPartial = path.basename(config.changedSourcePath).startsWith("_");
+    if (!isSassPartial && sassConfig.extensions.has(changedExtension)) {
+      scopedCandidates = candidates.filter((candidate) => path.resolve(candidate) === config.changedSourcePath);
+    }
+  }
+
+  if (scopedCandidates.length === 0) {
     logBuild(config, "info", "No Sass/CSS files to build.");
     return 0;
   }
 
   let builtCount = 0;
 
-  for (const inputFile of candidates) {
+  for (const inputFile of scopedCandidates) {
     const relativePath = path.relative(sassConfig.srcDir, inputFile);
     const extension = path.extname(inputFile).toLowerCase();
     const isPlainCss = extension === ".css";
@@ -421,14 +432,26 @@ async function runJsBuild(config) {
     return jsConfig.extensions.has(extension);
   });
 
-  if (candidates.length === 0) {
+  let scopedCandidates = candidates;
+  if (
+    config.changedSourcePath &&
+    isPathInsideOrSame(jsConfig.srcDir, config.changedSourcePath) &&
+    !jsConfig.bundle
+  ) {
+    const changedExtension = path.extname(config.changedSourcePath).toLowerCase();
+    if (jsConfig.extensions.has(changedExtension)) {
+      scopedCandidates = candidates.filter((candidate) => path.resolve(candidate) === config.changedSourcePath);
+    }
+  }
+
+  if (scopedCandidates.length === 0) {
     logBuild(config, "info", "No JS/TS files to build.");
     return 0;
   }
 
   let builtCount = 0;
 
-  for (const inputFile of candidates) {
+  for (const inputFile of scopedCandidates) {
     const relativePath = path.relative(jsConfig.srcDir, inputFile);
     const extension = path.extname(inputFile).toLowerCase();
     const relativeOutputPath = renderOutputPathForJs(relativePath, extension);
