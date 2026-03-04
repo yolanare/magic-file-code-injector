@@ -1,0 +1,17 @@
+{
+  "name": "magic-code-injector-builder",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "watch": "sass --watch dev:dist --no-source-map",
+    "serve": "vite --config config/vite.config.mjs",
+    "livereload": "node config/livereload.js",
+    "dev": "concurrently -k -n SASS,VITE,LR \"npm:watch\" \"npm:serve\" \"npm:livereload\""
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "livereload": "^0.10.3",
+    "sass": "^1.92.1",
+    "vite": "^7.1.3"
+  }
+}

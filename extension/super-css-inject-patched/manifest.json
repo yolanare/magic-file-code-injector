@@ -1,0 +1,31 @@
+{
+   "action": {
+      "default_icon": "icons/48x48.png",
+      "default_popup": "popup.html",
+      "default_title": "Enable Super CSS Inject"
+   },
+   "background": {
+      "service_worker": "js/background.js"
+   },
+   "content_scripts": [ {
+      "js": [ "js/SuperCSSInject.js" ],
+      "matches": [ "http://*/*", "https://*/*" ],
+      "run_at": "document_end"
+   } ],
+   "description": "Keep multiple stylesheets ready to inject and change on the fly!",
+   "icons": {
+      "128": "icons/128x128.png",
+      "48": "icons/48x48.png",
+      "64": "icons/64x64.png"
+   },
+   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAlluwQF0A/mkLe7GQ/El5n+3mM2RnMJYzZdTA4yVMZxXtJMONvmNsFaC8rnaVY+Sj09DfgbMQPSHFryQiXM8oVUA3yQc/6bagnLuBj0biBxND36V/hP8dbYdXjQyZXkn7oByXc5pr9J8QBibufnGDAsu6YqsbZTrLHSPW3UgPu1xtfQWltB6j75uPKtSMaLSF147/XnDMoQMNWC2TkMhdiqiGrUD2B80mWDgKxBWL4cobMZ4tIO/OxqNZtl97Ln1qoIZFoeh68jDpZuQ4Lf2MkUjBzi3pEQwTQk4KzUOEHxhRpKw3cuzTGBXdtLp4SqS08HlAffuu4LECcsdpm1tR1wIDAQAB",
+   "manifest_version": 3,
+   "name": "Super CSS Inject",
+   "options_ui": {
+      "open_in_tab": true,
+      "page": "options.html"
+   },
+   "permissions": [ "activeTab", "storage" ],
+   "update_url": "https://clients2.google.com/service/update2/crx",
+   "version": "1.5.0"
+}
