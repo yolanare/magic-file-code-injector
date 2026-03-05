@@ -12,6 +12,7 @@
         "bin",
         "src",
         "extension/magic-file-code-injector",
+        "examples",
         "README.md"
     ],
     "engines": {

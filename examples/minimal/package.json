@@ -1,0 +1,10 @@
+{
+    "name": "magic-file-code-injector-builder",
+    "scripts": {
+        "dev": "mfci-dev-server",
+        "build": "mfci-build"
+    },
+    "devDependencies": {
+        "@mfci/dev-server": "file:../../"
+    }
+}
