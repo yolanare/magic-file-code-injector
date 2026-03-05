@@ -1,5 +1,5 @@
 // Load pure helpers once so this service-worker file stays focused on side effects and orchestration.
-importScripts("js/background-utils.js");
+importScripts("background-utils.js");
 const {
   STORAGE_KEY,
   DEFAULT_HOST_STATE,
