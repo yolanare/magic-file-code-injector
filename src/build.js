@@ -108,6 +108,22 @@ function normalizeJsConfig(source, cwd) {
 }
 
 /**
+ * Normalize optional HTML export settings used to generate embeddable style/script wrappers.
+ * @param {any} source - Raw `build.exportHtml` section from config.
+ * @param {any} defaults - Default `build.exportHtml` section from template.
+ * @param {any} cwd - Working directory used to resolve relative paths.
+ * @returns {{css:boolean,js:boolean,outDir:string}} Normalized HTML export settings.
+ */
+function normalizeExportHtmlConfig(source, defaults, cwd) {
+  const input = source || {};
+  return {
+    css: normalizeBoolean(input.css, defaults.css),
+    js: normalizeBoolean(input.js, defaults.js),
+    outDir: normalizeDirectory(cwd, input.outDir, defaults.outDir),
+  };
+}
+
+/**
  * Normalize copy tasks and drop invalid entries early to keep build execution straightforward.
  * @param {any} source - Raw partial config section to normalize.
  * @param {any} cwd - Working directory used to resolve relative paths.
@@ -158,6 +174,7 @@ function normalizeBuildConfig(inputConfig = {}, options = {}) {
     // Build log prefix is internal by design so the public config stays focused on build behavior only.
     logPrefix: DEFAULT_BUILD_LOG_PREFIX,
     clean: normalizeBoolean(source.clean, defaults.clean),
+    exportHtml: normalizeExportHtmlConfig(source.exportHtml, defaults.exportHtml, cwd),
     sass: normalizeSassConfig(source.sass, cwd),
     js: normalizeJsConfig(source.js, cwd),
     copy: normalizeCopyTasks(source.copy, cwd),
@@ -284,6 +301,74 @@ function replaceExtension(filePath, extension) {
 }
 
 /**
+ * Resolve the HTML export target path under the configured root using one subfolder per output type.
+ * @param {string} outputFile - Built output file (css/js).
+ * @param {string} sourceOutDir - Build output directory that produced the file.
+ * @param {string} exportOutDir - Root export HTML directory.
+ * @returns {string} Absolute HTML export path.
+ */
+function resolveHtmlExportPath(outputFile, sourceOutDir, exportOutDir) {
+  const relativePath = path.relative(sourceOutDir, outputFile);
+  const htmlRelativePath = replaceExtension(relativePath, ".html");
+  const typeFolder = path.basename(sourceOutDir);
+  return path.resolve(exportOutDir, typeFolder, htmlRelativePath);
+}
+
+/**
+ * Escape inline script content so embedded `</script>` sequences do not break generated HTML wrappers.
+ * @param {string} sourceText - JavaScript source to embed inline.
+ * @returns {string} Safe inline script content.
+ */
+function escapeInlineScriptContent(sourceText) {
+  return String(sourceText || "").replace(/<\/script/gi, "<\\/script");
+}
+
+/**
+ * Export one CSS asset as an embeddable HTML snippet (`<style>...</style>`).
+ * @param {any} config - Normalized runtime configuration for the current subsystem.
+ * @param {any} sassConfig - Normalized Sass build config.
+ * @param {string} outputFile - Built CSS output path.
+ * @param {string} cssText - CSS content to wrap.
+ * @returns {Promise<number>} Number of exported HTML files (0 or 1).
+ */
+async function exportCssAsHtml(config, sassConfig, outputFile, cssText) {
+  if (!config.exportHtml.css) {
+    return 0;
+  }
+
+  const htmlFile = resolveHtmlExportPath(outputFile, sassConfig.outDir, config.exportHtml.outDir);
+  const htmlText = `<style>\n${cssText}\n</style>\n`;
+  await ensureParentDirectory(htmlFile);
+  await fsPromises.writeFile(htmlFile, htmlText, "utf8");
+  logBuild(config, "success", `HTML exported: ${displayPathPair(config, outputFile, htmlFile)}`);
+  return 1;
+}
+
+/**
+ * Export one JS asset as an embeddable HTML snippet (`<script>...</script>`).
+ * @param {any} config - Normalized runtime configuration for the current subsystem.
+ * @param {any} jsConfig - Normalized JS build config.
+ * @param {string} outputFile - Built JS output path.
+ * @returns {Promise<number>} Number of exported HTML files (0 or 1).
+ */
+async function exportJsAsHtml(config, jsConfig, outputFile) {
+  if (!config.exportHtml.js) {
+    return 0;
+  }
+
+  const jsText = await fsPromises.readFile(outputFile, "utf8");
+  const htmlFile = resolveHtmlExportPath(outputFile, jsConfig.outDir, config.exportHtml.outDir);
+  const needsModuleType = jsConfig.format === "esm" || outputFile.toLowerCase().endsWith(".mjs");
+  const scriptTag = needsModuleType ? '<script type="module">' : "<script>";
+  const htmlText = `${scriptTag}\n${escapeInlineScriptContent(jsText)}\n</script>\n`;
+
+  await ensureParentDirectory(htmlFile);
+  await fsPromises.writeFile(htmlFile, htmlText, "utf8");
+  logBuild(config, "success", `HTML exported: ${displayPathPair(config, outputFile, htmlFile)}`);
+  return 1;
+}
+
+/**
  * Map TS/JS-like input extensions to final JS output filenames.
  * @param {any} relativePath - Path relative to source root.
  * @param {any} extension - Source file extension used for output mapping.
@@ -308,6 +393,9 @@ async function cleanOutputDirectories(config) {
   }
 
   const outputDirs = new Set([config.sass.outDir, config.js.outDir, ...config.copy.map((task) => task.to)]);
+  if (config.exportHtml.css || config.exportHtml.js) {
+    outputDirs.add(config.exportHtml.outDir);
+  }
 
   for (const outputDir of outputDirs) {
     if (!outputDir || !fs.existsSync(outputDir)) {
@@ -384,6 +472,8 @@ async function runSassBuild(config) {
       await fsPromises.copyFile(inputFile, outputFile);
       logBuild(config, "success", `CSS copied: ${displayPathPair(config, inputFile, outputFile)}`);
       builtCount += 1;
+      const copiedCssText = await fsPromises.readFile(outputFile, "utf8");
+      builtCount += await exportCssAsHtml(config, sassConfig, outputFile, copiedCssText);
       continue;
     }
 
@@ -406,6 +496,7 @@ async function runSassBuild(config) {
     logBuild(config, "success", `Sass built: ${displayPathPair(config, inputFile, outputFile)}`);
 
     builtCount += 1;
+    builtCount += await exportCssAsHtml(config, sassConfig, outputFile, cssText);
   }
 
   return builtCount;
@@ -480,6 +571,7 @@ async function runJsBuild(config) {
     logBuild(config, "success", `JS built: ${displayPathPair(config, inputFile, outputFile)}`);
 
     builtCount += 1;
+    builtCount += await exportJsAsHtml(config, jsConfig, outputFile);
   }
 
   return builtCount;
@@ -556,8 +648,8 @@ async function runBuild(inputConfig = {}, options = {}) {
 
 module.exports = {
   DEFAULT_BUILD_LOG_PREFIX,
-  DEFAULT_SASS_EXTENSIONS,
-  DEFAULT_JS_EXTENSIONS,
+  DEFAULT_SASS_EXTENSIONS: DEFAULT_TEMPLATE.build.sass.extensions,
+  DEFAULT_JS_EXTENSIONS: DEFAULT_TEMPLATE.build.js.extensions,
   normalizeBuildConfig,
   runBuild,
 };

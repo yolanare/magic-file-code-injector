@@ -5,11 +5,6 @@ Repository with:
 - browser extension: `extension/magic-file-code-injector`
 - reusable npm package: `@mfci/dev-server` (CLI: `mfci-dev-server`, `mfci-build`)
 
-The package ships with:
-
-- CLI/server code (`bin`, `src`)
-- extension source (`extension/magic-file-code-injector`)
-
 ## Reusable package
 
 The package exposes:
@@ -24,8 +19,8 @@ Copy this `package.json` section:
 ```json
 {
     "scripts": {
-        "inject:build": "mfci-build",
-        "inject:server": "mfci-dev-server"
+        "build": "mfci-build",
+        "dev": "mfci-dev-server"
     },
     "devDependencies": {
         "@mfci/dev-server": "^0.1.0"
@@ -37,13 +32,13 @@ Then run:
 
 ```bash
 npm install
-npm run inject:server
+npm run dev
 ```
 
 Optional standalone build:
 
 ```bash
-npm run inject:build
+npm run build
 ```
 
 ## Default behavior
@@ -64,52 +59,72 @@ npm run inject:build
 - runs an initial build on startup using `build` config
 - watches `css/dev` and `js/dev`: changes trigger rebuild, and compiled output refresh is injected automatically
 - host/port: `127.0.0.1:35888`
-- internal (not user-configurable): manifest route `/magic-file-code-injector.manifest.json`, project name and log prefixes
 
-## Optional config
+## Config reference
 
-The package ships a default template at:
+The package ships a default template at [`src/mfci.config.cjs`](src/mfci.config.cjs).
 
-- `src/mfci.config.cjs`
+Create your project config (`mfci.config.cjs`) from this template and override only what you need.
 
-Create your project config (`mfci.config.cjs`) from this template:
+### Package config (`mfci.config.cjs`)
 
-```js
-module.exports = {
-    host: '127.0.0.1',
-    port: 35888,
-    files: [
-        { type: 'css', dir: 'css', urlPrefix: '/css', extensions: ['.css'], ignoreDirs: ['dev'] },
-        { type: 'js', dir: 'js', urlPrefix: '/js', extensions: ['.js', '.mjs'], ignoreDirs: ['dev'] },
-    ],
-    watch: ['css', 'js'],
-    build: {
-        clean: false,
-        sass: {
-            enabled: true,
-            srcDir: 'css/dev',
-            outDir: 'css',
-            extensions: ['.scss', '.sass', '.css'],
-            style: 'expanded',
-            sourceMap: false,
-            loadPaths: [],
-        },
-        js: {
-            enabled: true,
-            srcDir: 'js/dev',
-            outDir: 'js',
-            extensions: ['.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx'],
-            bundle: false,
-            minify: false,
-            sourcemap: false,
-            target: 'es2020',
-            format: 'esm',
-            platform: 'browser',
-        },
-        copy: [],
-    },
-};
-```
+#### Root options
+
+Global configuration options shared by server and build.
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `host` | `string` | `'127.0.0.1'` | Host used by `mfci-dev-server` HTTP + LiveReload services. |
+| `port` | `number` | `35888` | Port used by `mfci-dev-server` HTTP + LiveReload services. |
+| `files` | `Array<object>` | CSS + JS defaults | Public file groups exposed to extension manifest and served over HTTP. |
+| `watch` | `string[]` | `['css', 'js']` | Directories watched by LiveReload server. |
+| `build` | `object` | See `build` table below | Build behavior used by `mfci-build` and startup build in `mfci-dev-server`. |
+
+#### `files[]` item options
+
+Each entry describes one file group exposed in the extension manifest (CSS or JS).
+
+| Option | Type | Default (css item) | Default (js item) | Description |
+| --- | --- | --- | --- | --- |
+| `type` | `'css' \| 'js'` | `'css'` | `'js'` | File family used by extension injection logic. |
+| `dir` | `string` | `'css'` | `'js'` | Local source directory exposed by server. |
+| `urlPrefix` | `string` | `'/css'` | `'/js'` | Public URL prefix for served files. |
+| `extensions` | `string[]` | `['.css']` | `['.js', '.mjs']` | Extensions exposed in manifest for this family. |
+| `ignoreDirs` | `string[]` | `['dev']` | `['dev']` | Subdirectories ignored from exposed manifest files. |
+
+#### `build` options
+
+Unified build section:
+
+- `build.exportHtml` generates `.html` files from compiled CSS/JS.
+- `build.sass` compiles `css/dev` into `css`.
+- `build.js` compiles `js/dev` into `js`.
+- `build.copy` runs additional directory copy tasks after compilation.
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `build.clean` | `boolean` | `false` | Clears build output folders before build starts. |
+| `build.exportHtml.css` | `boolean` | `false` | When `true`, exports built CSS as `.html` with `<style>...</style>`. |
+| `build.exportHtml.js` | `boolean` | `false` | When `true`, exports built JS as `.html` with `<script>...</script>`. |
+| `build.exportHtml.outDir` | `string` | `'dist'` | Root output directory for HTML exports, grouped by output family (`dist/css`, `dist/js`). |
+| `build.sass.enabled` | `boolean` | `true` | Enables Sass/CSS build step. |
+| `build.sass.srcDir` | `string` | `'css/dev'` | Input directory for Sass/CSS sources. |
+| `build.sass.outDir` | `string` | `'css'` | Output directory for compiled CSS files. |
+| `build.sass.extensions` | `string[]` | `['.scss', '.sass', '.css']` | Source extensions accepted by Sass step. |
+| `build.sass.style` | `string` | `'expanded'` | Sass output style passed to compiler. |
+| `build.sass.sourceMap` | `boolean` | `false` | Enables Sass source maps. |
+| `build.sass.loadPaths` | `string[]` | `[]` | Extra Sass import lookup folders. |
+| `build.js.enabled` | `boolean` | `true` | Enables JS/TS build step. |
+| `build.js.srcDir` | `string` | `'js/dev'` | Input directory for JS/TS sources. |
+| `build.js.outDir` | `string` | `'js'` | Output directory for compiled JS files. |
+| `build.js.extensions` | `string[]` | `['.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx']` | Source extensions accepted by JS step. |
+| `build.js.bundle` | `boolean` | `false` | Enables esbuild bundling mode. |
+| `build.js.minify` | `boolean` | `false` | Enables esbuild minification. |
+| `build.js.sourcemap` | `boolean` | `false` | Enables esbuild sourcemaps. |
+| `build.js.target` | `string` | `'es2020'` | JavaScript target passed to esbuild. |
+| `build.js.format` | `string` | `'esm'` | Output format passed to esbuild. |
+| `build.js.platform` | `string` | `'browser'` | Build platform passed to esbuild. |
+| `build.copy` | `Array<{ from: string, to: string }>` | `[]` | Extra copy tasks executed recursively after build. |
 
 ## CLI options
 
@@ -126,6 +141,20 @@ mfci-build --config mfci.config.cjs --clean
 Load unpacked from:
 
 `extension/magic-file-code-injector`
+
+### Extension settings
+
+The extension stores settings in browser storage and applies them per domain.
+
+Global: connection to the local server.
+Per-site: active file selection and JS behavior per domain.
+
+| Scope | Option | Type | Default | Where to edit | Description |
+| --- | --- | --- | --- | --- | --- |
+| Global | `global.host` | `string` | `'127.0.0.1'` | Internal default | Host used by extension to connect to MFCI server. |
+| Global | `global.port` | `number` | `35888` | Options page | Port used by extension to connect to MFCI server. |
+| Per-site | `enabledFileIds` | `string[]` | `[]` | Popup | Selected CSS/JS files enabled for this domain. |
+| Per-site | `autoRefreshJs` | `boolean` | `false` | Popup | Enables full page reload when selected JS files change. |
 
 On a target website:
 

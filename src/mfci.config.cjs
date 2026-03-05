@@ -23,6 +23,11 @@ module.exports = {
     watch: ['css', 'js'],
     build: {
         clean: false,
+        exportHtml: {
+            css: false,
+            js: false,
+            outDir: 'dist',
+        },
         sass: {
             enabled: true,
             srcDir: 'css/dev',
