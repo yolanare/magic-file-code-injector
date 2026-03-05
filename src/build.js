@@ -324,6 +324,16 @@ function escapeInlineScriptContent(sourceText) {
 }
 
 /**
+ * Keep HTML JS export script mode aligned with dev-server manifest behavior.
+ * @param {string} outputFile - Built JS output path.
+ * @returns {boolean} True when exported HTML should use `<script type="module">`.
+ */
+function shouldUseModuleScriptTag(outputFile) {
+  const lowerPath = String(outputFile || "").toLowerCase();
+  return lowerPath.endsWith(".mjs") || lowerPath.endsWith(".module.js");
+}
+
+/**
  * Export one CSS asset as an embeddable HTML snippet (`<style>...</style>`).
  * @param {any} config - Normalized runtime configuration for the current subsystem.
  * @param {any} sassConfig - Normalized Sass build config.
@@ -358,7 +368,7 @@ async function exportJsAsHtml(config, jsConfig, outputFile) {
 
   const jsText = await fsPromises.readFile(outputFile, "utf8");
   const htmlFile = resolveHtmlExportPath(outputFile, jsConfig.outDir, config.exportHtml.outDir);
-  const needsModuleType = jsConfig.format === "esm" || outputFile.toLowerCase().endsWith(".mjs");
+  const needsModuleType = shouldUseModuleScriptTag(outputFile);
   const scriptTag = needsModuleType ? '<script type="module">' : "<script>";
   const htmlText = `${scriptTag}\n${escapeInlineScriptContent(jsText)}\n</script>\n`;
 
@@ -366,6 +376,74 @@ async function exportJsAsHtml(config, jsConfig, outputFile) {
   await fsPromises.writeFile(htmlFile, htmlText, "utf8");
   logBuild(config, "success", `HTML exported: ${displayPathPair(config, outputFile, htmlFile)}`);
   return 1;
+}
+
+/**
+ * Collect output files eligible for static HTML export from one output directory.
+ * @param {any} outputDir - Output directory to scan recursively.
+ * @param {any} sourceDir - Source directory that must be excluded from static exports.
+ * @param {Set<string>} supportedExtensions - Extensions allowed for export in this output type.
+ * @returns {Promise<string[]>} Absolute output file paths eligible for static export.
+ */
+async function collectStaticExportCandidates(outputDir, sourceDir, supportedExtensions) {
+  if (!fs.existsSync(outputDir)) {
+    return [];
+  }
+
+  const files = await walkDirectory(outputDir);
+  const candidates = files.filter((filePath) => {
+    const resolvedPath = path.resolve(filePath);
+    const extension = path.extname(resolvedPath).toLowerCase();
+    if (!supportedExtensions.has(extension)) {
+      return false;
+    }
+
+    if (isPathInsideOrSame(sourceDir, resolvedPath)) {
+      return false;
+    }
+
+    return true;
+  });
+
+  candidates.sort();
+  return candidates;
+}
+
+/**
+ * Export HTML wrappers for static files already present in css/js output folders.
+ * Files under source folders (`css/dev`, `js/dev`) are intentionally excluded.
+ * @param {any} config - Normalized runtime configuration for the current subsystem.
+ * @returns {Promise<number>} Number of static HTML files exported.
+ */
+async function runStaticHtmlExports(config) {
+  let exportedCount = 0;
+
+  if (config.exportHtml.css) {
+    const cssCandidates = await collectStaticExportCandidates(
+      config.sass.outDir,
+      config.sass.srcDir,
+      new Set([".css"])
+    );
+
+    for (const cssFile of cssCandidates) {
+      const cssText = await fsPromises.readFile(cssFile, "utf8");
+      exportedCount += await exportCssAsHtml(config, config.sass, cssFile, cssText);
+    }
+  }
+
+  if (config.exportHtml.js) {
+    const jsCandidates = await collectStaticExportCandidates(
+      config.js.outDir,
+      config.js.srcDir,
+      new Set([".js", ".mjs"])
+    );
+
+    for (const jsFile of jsCandidates) {
+      exportedCount += await exportJsAsHtml(config, config.js, jsFile);
+    }
+  }
+
+  return exportedCount;
 }
 
 /**
@@ -472,8 +550,6 @@ async function runSassBuild(config) {
       await fsPromises.copyFile(inputFile, outputFile);
       logBuild(config, "success", `CSS copied: ${displayPathPair(config, inputFile, outputFile)}`);
       builtCount += 1;
-      const copiedCssText = await fsPromises.readFile(outputFile, "utf8");
-      builtCount += await exportCssAsHtml(config, sassConfig, outputFile, copiedCssText);
       continue;
     }
 
@@ -496,7 +572,6 @@ async function runSassBuild(config) {
     logBuild(config, "success", `Sass built: ${displayPathPair(config, inputFile, outputFile)}`);
 
     builtCount += 1;
-    builtCount += await exportCssAsHtml(config, sassConfig, outputFile, cssText);
   }
 
   return builtCount;
@@ -571,7 +646,6 @@ async function runJsBuild(config) {
     logBuild(config, "success", `JS built: ${displayPathPair(config, inputFile, outputFile)}`);
 
     builtCount += 1;
-    builtCount += await exportJsAsHtml(config, jsConfig, outputFile);
   }
 
   return builtCount;
@@ -631,8 +705,9 @@ async function runBuild(inputConfig = {}, options = {}) {
   const sassCount = await runSassBuild(config);
   const jsCount = await runJsBuild(config);
   const copyCount = await runCopyTasks(config);
+  const staticHtmlCount = await runStaticHtmlExports(config);
 
-  const total = sassCount + jsCount + copyCount;
+  const total = sassCount + jsCount + copyCount + staticHtmlCount;
   logBuild(config, "success", `Build completed: ${total} file${total > 1 ? "s" : ""}.`);
 
   return {
@@ -641,6 +716,7 @@ async function runBuild(inputConfig = {}, options = {}) {
       sass: sassCount,
       js: jsCount,
       copy: copyCount,
+      staticHtml: staticHtmlCount,
       total,
     },
   };

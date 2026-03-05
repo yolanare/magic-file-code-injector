@@ -100,12 +100,13 @@ Unified build section:
 - `build.sass` compiles `css/dev` into `css`.
 - `build.js` compiles `js/dev` into `js`.
 - `build.copy` runs additional directory copy tasks after compilation.
+- HTML exports are generated after build steps complete by scanning final `css`/`js` outputs (excluding `css/dev` and `js/dev`).
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
 | `build.clean` | `boolean` | `false` | Clears build output folders before build starts. |
-| `build.exportHtml.css` | `boolean` | `false` | When `true`, exports built CSS as `.html` with `<style>...</style>`. |
-| `build.exportHtml.js` | `boolean` | `false` | When `true`, exports built JS as `.html` with `<script>...</script>`. |
+| `build.exportHtml.css` | `boolean` | `false` | When `true`, exports CSS as `.html` with `<style>...</style>`. |
+| `build.exportHtml.js` | `boolean` | `false` | When `true`, exports JS as `.html` with `<script>...</script>`. |
 | `build.exportHtml.outDir` | `string` | `'dist'` | Root output directory for HTML exports, grouped by output family (`dist/css`, `dist/js`). |
 | `build.sass.enabled` | `boolean` | `true` | Enables Sass/CSS build step. |
 | `build.sass.srcDir` | `string` | `'css/dev'` | Input directory for Sass/CSS sources. |
