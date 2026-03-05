@@ -12,6 +12,7 @@ const DEFAULT_PORT = 35888;
 const DEFAULT_PROJECT_NAME = 'magic-file-code-injector';
 const DEFAULT_LOG_PREFIX = '[mfci]';
 const DEFAULT_IGNORED_DIRS = ['dev'];
+const REFRESH_BATCH_WINDOW_MS = 150;
 
 const DEFAULT_FILE_DEFINITIONS = [
     {
@@ -417,6 +418,30 @@ function toUrlPath(fsPath, definition) {
 }
 
 /**
+ * Resolve the path sent through LiveReload so the extension can match the exact manifest file.
+ * @param {any} config - Normalized runtime configuration for the current subsystem.
+ * @param {any} filePath - Absolute filesystem path of the refreshed file.
+ * @returns {string} LiveReload path payload (prefer public URL path when file is exposed).
+ */
+function toLiveReloadPath(config, filePath) {
+    const absolutePath = path.resolve(String(filePath || ''));
+
+    for (const definition of config.fileDefinitions) {
+        if (!isPathInside(definition.fsRoot, absolutePath)) {
+            continue;
+        }
+
+        if (isIgnoredPath(definition, absolutePath)) {
+            continue;
+        }
+
+        return toUrlPath(absolutePath, definition);
+    }
+
+    return absolutePath;
+}
+
+/**
  * Infer script mode so module files keep correct execution semantics in the page.
  * @param {any} urlPath - Public URL path used to infer script mode.
  * @returns {"script"|"module"} Script mode for browser injection.
@@ -644,9 +669,12 @@ function startDevServer(inputConfig = {}, options = {}) {
     const watchedExtensions = collectWatchedExtensions(config, buildConfig);
     const buildRuntime = {
         isRunning: false,
-        hasPendingRun: false,
+        pendingSourcePaths: new Set(),
+        pendingGeneralReason: "",
     };
     const pendingRefreshLogs = [];
+    const pendingOutputRefreshByPath = new Map();
+    let refreshBatchTimer = null;
 
     if (config.watchDirs.length === 0) {
         throw new Error(
@@ -694,14 +722,94 @@ function startDevServer(inputConfig = {}, options = {}) {
     }
 
     /**
+     * Log one refresh signal line with type-specific wording.
+     * @param {string} filePath - Absolute filesystem path of the refreshed file.
+     * @param {"css"|"js"|"asset"} reloadType - Refresh category derived from output extension.
+     * @returns {void} Writes one refresh log line.
+     */
+    function logRefreshSignal(filePath, reloadType) {
+        if (reloadType === 'css') {
+            logRefreshAction('success', `CSS hot refresh signal sent: ${formatServerPath(config, filePath)}`);
+            return;
+        }
+
+        if (reloadType === 'js') {
+            logRefreshAction(
+                'success',
+                `JS refresh signal sent: ${formatServerPath(config, filePath)} (extension may trigger full reload)`
+            );
+            return;
+        }
+
+        logRefreshAction('info', `Refresh signal sent (${reloadType}): ${formatServerPath(config, filePath)}`);
+    }
+
+    /**
+     * Flush queued output refreshes once the debounce window elapsed and no build is currently running.
+     * @returns {void} Sends refresh events to LiveReload for queued output files.
+     */
+    function flushOutputRefreshBatch() {
+        if (pendingOutputRefreshByPath.size === 0) {
+            return;
+        }
+
+        if (buildRuntime.isRunning) {
+            scheduleOutputRefreshBatch();
+            return;
+        }
+
+        const batchEntries = Array.from(pendingOutputRefreshByPath.entries()).sort(([left], [right]) => left.localeCompare(right));
+        pendingOutputRefreshByPath.clear();
+
+        for (const [filePath, reloadType] of batchEntries) {
+            logRefreshSignal(filePath, reloadType);
+            originalRefresh(toLiveReloadPath(config, filePath));
+        }
+    }
+
+    /**
+     * Schedule one debounced flush for queued output refresh events.
+     * @returns {void} Arms refresh debounce timer when not already pending.
+     */
+    function scheduleOutputRefreshBatch() {
+        if (refreshBatchTimer) {
+            return;
+        }
+
+        refreshBatchTimer = setTimeout(() => {
+            refreshBatchTimer = null;
+            flushOutputRefreshBatch();
+        }, REFRESH_BATCH_WINDOW_MS);
+    }
+
+    /**
+     * Queue one output refresh event and debounce real signal emission.
+     * @param {string} filePath - Output file path that triggered LiveReload.
+     * @returns {void} Stores event and schedules batch flush.
+     */
+    function queueOutputRefresh(filePath) {
+        const absolutePath = path.resolve(filePath);
+        pendingOutputRefreshByPath.set(absolutePath, inferReloadType(absolutePath));
+        scheduleOutputRefreshBatch();
+    }
+
+    /**
      * Queue build execution to avoid overlapping runs when multiple source events happen quickly.
      * @param {any} reason - Sync reason used for diagnostics and message tracing.
      * @param {any} sourcePath - Filesystem path or changed path used by the current operation.
      * @returns {Promise<void>} Resolves after build queue is drained.
      */
     async function runBuildFromDevServer(reason, sourcePath) {
+        const normalizedSourcePath =
+            typeof sourcePath === 'string' && sourcePath.length > 0 ? path.resolve(sourcePath) : '';
+
+        if (reason === 'source-change' && normalizedSourcePath) {
+            buildRuntime.pendingSourcePaths.add(normalizedSourcePath);
+        } else {
+            buildRuntime.pendingGeneralReason = reason;
+        }
+
         if (buildRuntime.isRunning) {
-            buildRuntime.hasPendingRun = true;
             return;
         }
 
@@ -709,26 +817,37 @@ function startDevServer(inputConfig = {}, options = {}) {
 
         try {
             do {
-                buildRuntime.hasPendingRun = false;
-                const sourceLabel = typeof sourcePath === 'string' && sourcePath.length > 0 ? sourcePath : '(startup)';
+                let runReason = buildRuntime.pendingGeneralReason || reason;
+                let runSourcePath = '';
 
-                const scopedBuildConfig = createScopedBuildConfig(buildConfig, sourcePath);
+                if (buildRuntime.pendingSourcePaths.size > 0) {
+                    const nextSourcePath = buildRuntime.pendingSourcePaths.values().next().value;
+                    buildRuntime.pendingSourcePaths.delete(nextSourcePath);
+                    runReason = 'source-change';
+                    runSourcePath = nextSourcePath;
+                } else {
+                    buildRuntime.pendingGeneralReason = '';
+                }
+
+                const sourceLabel = runSourcePath || '(startup)';
+
+                const scopedBuildConfig = createScopedBuildConfig(buildConfig, runSourcePath);
                 const buildResult = await runBuild(scopedBuildConfig, {
                     cwd: config.cwd,
                     logger: () => {},
                     useColor: config.useColor,
-                    changedSourcePath: sourcePath,
+                    changedSourcePath: runSourcePath,
                 });
                 const sourceDetails =
                     sourceLabel === '(startup)' ? sourceLabel : formatServerPath(config, sourceLabel);
-                if (reason === 'source-change' && sourceLabel !== '(startup)') {
+                if (runReason === 'source-change' && sourceLabel !== '(startup)') {
                     logServer(config, 'success', `Build done: ${sourceDetails}`);
                 } else {
                     const totalBuilt = buildResult && buildResult.stats ? buildResult.stats.total : 0;
-                    logServer(config, 'success', `Build done (${reason}): ${totalBuilt} file(s) from ${sourceDetails}`);
+                    logServer(config, 'success', `Build done (${runReason}): ${totalBuilt} file(s) from ${sourceDetails}`);
                 }
                 flushRefreshLogs();
-            } while (buildRuntime.hasPendingRun);
+            } while (buildRuntime.pendingSourcePaths.size > 0 || buildRuntime.pendingGeneralReason);
         } catch (error) {
             const message = String(error && error.message ? error.message : error);
             logServer(config, 'error', `Build failed: ${message}`);
@@ -749,18 +868,8 @@ function startDevServer(inputConfig = {}, options = {}) {
 
         // Log refresh actions in terminal so developers can correlate file updates with browser behavior.
         if (isBuildOutputPath(filePath, buildConfig)) {
-            const reloadType = inferReloadType(filePath);
-            if (reloadType === 'css') {
-                logRefreshAction('success', `CSS hot refresh signal sent: ${formatServerPath(config, filePath)}`);
-            } else if (reloadType === 'js') {
-                logRefreshAction(
-                    'success',
-                    `JS refresh signal sent: ${formatServerPath(config, filePath)} (extension may trigger full reload)`
-                );
-            } else {
-                logRefreshAction('info', `Refresh signal sent (${reloadType}): ${formatServerPath(config, filePath)}`);
-            }
-            return originalRefresh(filePath);
+            queueOutputRefresh(filePath);
+            return;
         }
 
         const reloadType = inferReloadType(filePath);
@@ -781,6 +890,10 @@ function startDevServer(inputConfig = {}, options = {}) {
 
     const close = () => {
         try {
+            if (refreshBatchTimer) {
+                clearTimeout(refreshBatchTimer);
+                refreshBatchTimer = null;
+            }
             lrServer.close();
         } catch (_error) {
             // Ignore shutdown errors.

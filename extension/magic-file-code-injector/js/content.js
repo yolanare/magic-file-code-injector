@@ -134,7 +134,6 @@
     if (styleElement.getAttribute(STYLE_HASH_ATTR) !== contentHash) {
       styleElement.textContent = content;
       styleElement.setAttribute(STYLE_HASH_ATTR, contentHash);
-      logToPageConsole("info", `[mfci] CSS refreshed: ${file.id}`);
       return;
     }
 

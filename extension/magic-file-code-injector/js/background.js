@@ -31,6 +31,11 @@ const LR_PROTOCOLS = [
 ];
 const RECONNECT_INTERVAL_MS = 2000;
 const RECONNECT_WINDOW_MS = 20000;
+const SOCKET_EVENT_BATCH_WINDOW_MS = 150;
+
+let pendingSocketEvents = [];
+let socketBatchTimer = null;
+let socketBatchInFlight = false;
 
 /**
  * Deduplicate string lists before persisting state to keep storage deterministic.
@@ -281,6 +286,54 @@ function tabSendMessage(tabId, payload) {
       resolve({ ok: true });
     });
   });
+}
+
+/**
+ * Send a plain browser-console log event to one tab through content script bridge.
+ * @param {any} tabId - Chrome tab identifier to target.
+ * @param {"info"|"warn"|"error"} level - Log severity for page console.
+ * @param {string} message - Human-readable log line.
+ * @returns {Promise<void>} Resolves after best-effort message delivery.
+ */
+async function logToBrowserTabConsole(tabId, level, message) {
+  if (typeof tabId !== "number") {
+    return;
+  }
+
+  await tabSendMessage(tabId, {
+    type: "MFCI_BROWSER_LOG",
+    level,
+    message,
+  });
+}
+
+/**
+ * Render a concise file-id list for browser-console logs.
+ * @param {string[]} fileIds - Affected file IDs involved in one refresh action.
+ * @returns {string} Human-readable list label.
+ */
+function formatFileIdList(fileIds) {
+  const uniqueIds = uniqueStrings(Array.isArray(fileIds) ? fileIds : []);
+  if (uniqueIds.length === 0) {
+    return "unknown file";
+  }
+  if (uniqueIds.length === 1) {
+    return uniqueIds[0];
+  }
+  return uniqueIds.join(", ");
+}
+
+/**
+ * Build a unified browser-console message for batched refresh logs across file types.
+ * @param {"css"|"js"} fileType - File category processed by the batch.
+ * @param {string[]} fileIds - Affected file IDs included in the batch.
+ * @param {boolean} fullReload - Whether refresh required a full page reload.
+ * @returns {string} Human-readable refresh log line.
+ */
+function formatRefreshLogMessage(fileType, fileIds, fullReload) {
+  const typeLabel = fileType === "js" ? "JS" : "CSS";
+  const suffix = fullReload ? " (full page reload)" : "";
+  return `[mfci] ${typeLabel} refreshed: ${formatFileIdList(fileIds)}${suffix}`;
 }
 
 /**
@@ -813,17 +866,261 @@ async function connectSocket() {
     scheduleReconnect();
   });
 
-  socket.addEventListener("message", async (event) => {
-    await handleSocketMessage(event.data);
+  socket.addEventListener("message", (event) => {
+    handleSocketMessage(event.data);
   });
 }
 
 /**
- * Handle LiveReload events and trigger CSS sync or JS reload/pending flows per tab.
- * @param {any} rawMessage - Raw WebSocket message payload from LiveReload server.
- * @returns {Promise<void>} Completes after LiveReload event processing.
+ * Parse one LiveReload payload into a normalized refresh event queued for batch processing.
+ * @param {any} payload - Parsed WebSocket payload emitted by LiveReload server.
+ * @returns {{fileType:"css"|"js",fileId:string,normalizedChangedPath:string}|null} Normalized refresh event.
  */
-async function handleSocketMessage(rawMessage) {
+function parseSocketRefreshEvent(payload) {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+
+  if (payload.type === "file-changed") {
+    const fileType = payload.fileType === "css" || payload.fileType === "js" ? payload.fileType : "";
+    if (!fileType) {
+      return null;
+    }
+
+    return {
+      fileType,
+      fileId: typeof payload.fileId === "string" ? payload.fileId : "",
+      normalizedChangedPath: "",
+    };
+  }
+
+  if (payload.command !== "reload") {
+    return null;
+  }
+
+  const changedPath = typeof payload.path === "string" ? payload.path : "";
+  const fileType = inferFileTypeFromPath(changedPath);
+  if (!fileType) {
+    return null;
+  }
+
+  return {
+    fileType,
+    fileId: "",
+    normalizedChangedPath: normalizeChangedPath(changedPath),
+  };
+}
+
+/**
+ * Resolve the file id for one socket event using the current manifest when path-only events are received.
+ * @param {{fileType:"css"|"js",fileId:string,normalizedChangedPath:string}} event - Normalized refresh event.
+ * @param {any} manifest - Latest manifest payload fetched from dev server.
+ * @returns {{fileType:"css"|"js",fileId:string,normalizedChangedPath:string}} Event with best-effort resolved file id.
+ */
+function resolveSocketEventFileId(event, manifest) {
+  if (event.fileId || !manifest || !event.normalizedChangedPath) {
+    return event;
+  }
+
+  for (const candidate of manifest.files) {
+    if (candidate.type !== event.fileType) {
+      continue;
+    }
+
+    const normalizedManifestPath = normalizeChangedPath(candidate.path);
+    if (
+      event.normalizedChangedPath === normalizedManifestPath ||
+      event.normalizedChangedPath.endsWith(normalizedManifestPath)
+    ) {
+      return {
+        ...event,
+        fileId: candidate.id,
+      };
+    }
+  }
+
+  return event;
+}
+
+/**
+ * Resolve which enabled file ids are affected for one host by one refresh event.
+ * @param {any} hostState - Per-site configuration including enabled files and JS refresh mode.
+ * @param {{fileType:"css"|"js",fileId:string,normalizedChangedPath:string}} event - Normalized refresh event.
+ * @param {Map<string,string>} manifestTypeById - Manifest type lookup keyed by file id.
+ * @returns {string[]} Enabled file ids impacted by the event for this host.
+ */
+function getAffectedIdsForHostEvent(hostState, event, manifestTypeById) {
+  if (event.fileId) {
+    return hostState.enabledFileIds.includes(event.fileId) ? [event.fileId] : [];
+  }
+
+  if (!event.normalizedChangedPath) {
+    return [];
+  }
+
+  let enabledIdsForType = hostState.enabledFileIds.filter((enabledId) => {
+    if (enabledId.startsWith(`${event.fileType}:`)) {
+      return true;
+    }
+
+    return manifestTypeById.get(enabledId) === event.fileType;
+  });
+
+  // Prefer path-based matching to avoid refreshing unrelated enabled files of the same type.
+  const matchedByPath = enabledIdsForType.filter((enabledId) => {
+    const normalizedEnabledPath = normalizePathFromFileId(enabledId);
+    return (
+      event.normalizedChangedPath === normalizedEnabledPath ||
+      event.normalizedChangedPath.endsWith(normalizedEnabledPath)
+    );
+  });
+
+  return matchedByPath;
+}
+
+/**
+ * Queue a delayed flush to group multiple socket events saved within a short window.
+ * @returns {void} Schedules one batch processing pass.
+ */
+function scheduleSocketEventFlush() {
+  if (socketBatchInFlight) {
+    return;
+  }
+
+  if (socketBatchTimer) {
+    clearTimeout(socketBatchTimer);
+  }
+
+  socketBatchTimer = setTimeout(() => {
+    socketBatchTimer = null;
+    void flushSocketEventBatch();
+  }, SOCKET_EVENT_BATCH_WINDOW_MS);
+}
+
+/**
+ * Process queued socket events as one batch and apply one aggregated refresh per tab/file type.
+ * @returns {Promise<void>} Completes after tab sync/reload actions are dispatched.
+ */
+async function flushSocketEventBatch() {
+  if (socketBatchInFlight || pendingSocketEvents.length === 0) {
+    return;
+  }
+
+  socketBatchInFlight = true;
+
+  const events = pendingSocketEvents;
+  pendingSocketEvents = [];
+
+  try {
+    const state = await loadState();
+    const needManifest = events.some((event) => !event.fileId || event.normalizedChangedPath);
+
+    let manifest = null;
+    if (needManifest) {
+      try {
+        manifest = await fetchManifest(state.global);
+      } catch (_error) {
+        manifest = null;
+      }
+    }
+
+    const resolvedEvents = uniqueStrings(
+      events
+        .map((event) => resolveSocketEventFileId(event, manifest))
+        .filter((event) => event.fileType === "css" || event.fileType === "js")
+        .map((event) => `${event.fileType}|${event.fileId}|${event.normalizedChangedPath}`)
+    ).map((key) => {
+      const [fileType, fileId, normalizedChangedPath] = key.split("|");
+      return {
+        fileType,
+        fileId,
+        normalizedChangedPath,
+      };
+    });
+
+    if (resolvedEvents.length === 0) {
+      return;
+    }
+
+    const tabs = await tabsQuery({ url: ["http://*/*", "https://*/*"] });
+    const manifestTypeById = new Map((manifest ? manifest.files : []).map((file) => [file.id, file.type]));
+    let stateChanged = false;
+
+    for (const tab of tabs) {
+      if (typeof tab.id !== "number" || !tab.url) {
+        continue;
+      }
+
+      const hostKey = getHostKey(tab.url);
+      if (!hostKey) {
+        continue;
+      }
+
+      const hostState = state.hosts[hostKey];
+      if (!hostState) {
+        continue;
+      }
+
+      const affectedIdsByType = {
+        css: new Set(),
+        js: new Set(),
+      };
+
+      for (const event of resolvedEvents) {
+        const affectedIds = getAffectedIdsForHostEvent(hostState, event, manifestTypeById);
+        for (const affectedId of affectedIds) {
+          affectedIdsByType[event.fileType].add(affectedId);
+        }
+      }
+
+      for (const fileType of ["css", "js"]) {
+        const affectedIds = Array.from(affectedIdsByType[fileType]);
+        if (affectedIds.length === 0) {
+          continue;
+        }
+
+        if (fileType === "css") {
+          const synced = await syncTab(tab.id, "css-change", { fileIds: affectedIds });
+          if (synced) {
+            await logToBrowserTabConsole(tab.id, "info", formatRefreshLogMessage("css", affectedIds, false));
+          }
+          continue;
+        }
+
+        if (!hostState.autoRefreshJs) {
+          for (const pendingId of affectedIds) {
+            if (!hostState.pendingJsUpdateIds.includes(pendingId)) {
+              hostState.pendingJsUpdateIds.push(pendingId);
+              stateChanged = true;
+            }
+          }
+          continue;
+        }
+
+        // Full reload is required for JS because script tags can have side effects not safely hot-swappable.
+        await delay(50);
+        await tabReload(tab.id).catch(() => {});
+        await logToBrowserTabConsole(tab.id, "info", formatRefreshLogMessage("js", affectedIds, true));
+      }
+    }
+
+    if (stateChanged) {
+      await saveState(state);
+    }
+  } finally {
+    socketBatchInFlight = false;
+    if (pendingSocketEvents.length > 0) {
+      scheduleSocketEventFlush();
+    }
+  }
+}
+
+/**
+ * Parse and queue one raw LiveReload message; real refresh actions run in batched flushes.
+ * @param {any} rawMessage - Raw WebSocket message payload from LiveReload server.
+ * @returns {void} Adds supported events to batch queue.
+ */
+function handleSocketMessage(rawMessage) {
   let payload;
   try {
     payload = JSON.parse(rawMessage);
@@ -831,149 +1128,13 @@ async function handleSocketMessage(rawMessage) {
     return;
   }
 
-  if (!payload || typeof payload !== "object") {
+  const event = parseSocketRefreshEvent(payload);
+  if (!event) {
     return;
   }
 
-  const state = await loadState();
-
-  let fileId = "";
-  let fileType = "";
-  let normalizedChangedPath = "";
-  let manifest = null;
-
-  if (payload.type === "file-changed") {
-    fileId = typeof payload.fileId === "string" ? payload.fileId : "";
-    fileType = payload.fileType === "css" || payload.fileType === "js" ? payload.fileType : "";
-  } else if (payload.command === "reload") {
-    const changedPath = typeof payload.path === "string" ? payload.path : "";
-    normalizedChangedPath = normalizeChangedPath(changedPath);
-    fileType = inferFileTypeFromPath(changedPath);
-
-    if (fileType) {
-      try {
-        manifest = await fetchManifest(state.global);
-      } catch (_error) {
-        manifest = null;
-      }
-
-      if (manifest) {
-        // Match incoming changed path against current manifest paths to resolve the exact file id when possible.
-        for (const candidate of manifest.files) {
-          if (candidate.type !== fileType) {
-            continue;
-          }
-
-          const normalizedManifestPath = normalizeChangedPath(candidate.path);
-          if (
-            normalizedChangedPath === normalizedManifestPath ||
-            normalizedChangedPath.endsWith(normalizedManifestPath)
-          ) {
-            fileId = candidate.id;
-            break;
-          }
-        }
-      }
-    }
-  }
-
-  if (!fileType) {
-    return;
-  }
-
-  const tabs = await tabsQuery({ url: ["http://*/*", "https://*/*"] });
-  const manifestTypeById = new Map((manifest ? manifest.files : []).map((file) => [file.id, file.type]));
-
-  let stateChanged = false;
-
-  for (const tab of tabs) {
-    if (typeof tab.id !== "number" || !tab.url) {
-      continue;
-    }
-
-    const hostKey = getHostKey(tab.url);
-    if (!hostKey) {
-      continue;
-    }
-
-    const hostState = state.hosts[hostKey];
-    if (!hostState) {
-      continue;
-    }
-
-    let affectedIds = [];
-    let affectedJsIds = [];
-    let affectedCssIds = [];
-    let isAffected = false;
-
-    if (fileId) {
-      isAffected = hostState.enabledFileIds.includes(fileId);
-      if (isAffected) {
-        affectedIds = [fileId];
-      }
-    } else {
-      let enabledIdsForType = hostState.enabledFileIds.filter((enabledId) => {
-        if (enabledId.startsWith(`${fileType}:`)) {
-          return true;
-        }
-
-        return manifestTypeById.get(enabledId) === fileType;
-      });
-
-      // Prefer path-based matching so one LiveReload event targets only the changed enabled file(s).
-      if (normalizedChangedPath) {
-        const matchedByPath = enabledIdsForType.filter((enabledId) => {
-          const normalizedEnabledPath = normalizePathFromFileId(enabledId);
-          return (
-            normalizedChangedPath === normalizedEnabledPath ||
-            normalizedChangedPath.endsWith(normalizedEnabledPath)
-          );
-        });
-
-        if (matchedByPath.length > 0) {
-          enabledIdsForType = matchedByPath;
-        }
-      }
-
-      isAffected = enabledIdsForType.length > 0;
-      affectedIds = enabledIdsForType;
-    }
-
-    if (fileType === "js") {
-      affectedJsIds = affectedIds;
-    }
-
-    if (fileType === "css") {
-      affectedCssIds = affectedIds;
-    }
-
-    if (!isAffected) {
-      continue;
-    }
-
-    if (fileType === "css") {
-      await syncTab(tab.id, "css-change", { fileIds: affectedCssIds });
-      continue;
-    }
-
-    if (hostState.autoRefreshJs) {
-      await delay(50);
-      // Full reload is required for JS because script tags can have side effects not safely hot-swappable.
-      await tabReload(tab.id).catch(() => {});
-      continue;
-    }
-
-    for (const pendingId of affectedJsIds) {
-      if (!hostState.pendingJsUpdateIds.includes(pendingId)) {
-        hostState.pendingJsUpdateIds.push(pendingId);
-        stateChanged = true;
-      }
-    }
-  }
-
-  if (stateChanged) {
-    await saveState(state);
-  }
+  pendingSocketEvents.push(event);
+  scheduleSocketEventFlush();
 }
 
 /**
