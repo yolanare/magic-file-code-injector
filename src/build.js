@@ -4,10 +4,9 @@ const path = require("node:path");
 const sass = require("sass");
 const esbuild = require("esbuild");
 const { formatLogLine, formatPath, supportsColor } = require("./log-format");
+const DEFAULT_TEMPLATE = require("./mfci.config.cjs");
 
 const DEFAULT_BUILD_LOG_PREFIX = "[mfci-build]";
-const DEFAULT_SASS_EXTENSIONS = [".scss", ".sass", ".css"];
-const DEFAULT_JS_EXTENSIONS = [".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx"];
 
 /**
  * Centralize non-empty string checks to keep config normalization concise and consistent.
@@ -65,20 +64,21 @@ function normalizeDirectory(cwd, inputValue, fallbackValue) {
  * @returns {object} Normalized Sass build config.
  */
 function normalizeSassConfig(source, cwd) {
-  const input = source && typeof source === "object" ? source : {};
-  const style = input.style === "compressed" ? "compressed" : "expanded";
+  const defaults = DEFAULT_TEMPLATE.build.sass;
+  const input = source || {};
+  const style = input.style === "compressed" ? "compressed" : defaults.style;
 
   const loadPaths = Array.isArray(input.loadPaths)
     ? input.loadPaths.map((entry) => String(entry || "").trim()).filter(Boolean).map((entry) => path.resolve(cwd, entry))
     : [];
 
   return {
-    enabled: normalizeBoolean(input.enabled, true),
-    srcDir: normalizeDirectory(cwd, input.srcDir, "css/dev"),
-    outDir: normalizeDirectory(cwd, input.outDir, "css"),
-    extensions: normalizeExtensions(input.extensions, DEFAULT_SASS_EXTENSIONS),
+    enabled: normalizeBoolean(input.enabled, defaults.enabled),
+    srcDir: normalizeDirectory(cwd, input.srcDir, defaults.srcDir),
+    outDir: normalizeDirectory(cwd, input.outDir, defaults.outDir),
+    extensions: normalizeExtensions(input.extensions, defaults.extensions),
     style,
-    sourceMap: normalizeBoolean(input.sourceMap, false),
+    sourceMap: normalizeBoolean(input.sourceMap, defaults.sourceMap),
     loadPaths,
   };
 }
@@ -90,19 +90,20 @@ function normalizeSassConfig(source, cwd) {
  * @returns {object} Normalized JS build config.
  */
 function normalizeJsConfig(source, cwd) {
-  const input = source && typeof source === "object" ? source : {};
+  const defaults = DEFAULT_TEMPLATE.build.js;
+  const input = source || {};
 
   return {
-    enabled: normalizeBoolean(input.enabled, true),
-    srcDir: normalizeDirectory(cwd, input.srcDir, "js/dev"),
-    outDir: normalizeDirectory(cwd, input.outDir, "js"),
-    extensions: normalizeExtensions(input.extensions, DEFAULT_JS_EXTENSIONS),
-    bundle: normalizeBoolean(input.bundle, false),
-    minify: normalizeBoolean(input.minify, false),
-    sourcemap: normalizeBoolean(input.sourcemap, false),
-    target: isNonEmptyString(input.target) ? input.target.trim() : "es2020",
-    format: isNonEmptyString(input.format) ? input.format.trim() : "esm",
-    platform: isNonEmptyString(input.platform) ? input.platform.trim() : "browser",
+    enabled: normalizeBoolean(input.enabled, defaults.enabled),
+    srcDir: normalizeDirectory(cwd, input.srcDir, defaults.srcDir),
+    outDir: normalizeDirectory(cwd, input.outDir, defaults.outDir),
+    extensions: normalizeExtensions(input.extensions, defaults.extensions),
+    bundle: normalizeBoolean(input.bundle, defaults.bundle),
+    minify: normalizeBoolean(input.minify, defaults.minify),
+    sourcemap: normalizeBoolean(input.sourcemap, defaults.sourcemap),
+    target: isNonEmptyString(input.target) ? input.target.trim() : defaults.target,
+    format: isNonEmptyString(input.format) ? input.format.trim() : defaults.format,
+    platform: isNonEmptyString(input.platform) ? input.platform.trim() : defaults.platform,
   };
 }
 
@@ -142,8 +143,9 @@ function normalizeCopyTasks(source, cwd) {
  * @returns {object} Fully normalized build config.
  */
 function normalizeBuildConfig(inputConfig = {}, options = {}) {
+  const defaults = DEFAULT_TEMPLATE.build;
   const cwd = options.cwd || process.cwd();
-  const source = inputConfig && typeof inputConfig === "object" ? inputConfig : {};
+  const source = inputConfig || {};
   const logger = typeof options.logger === "function" ? options.logger : console.log;
   const useColor = typeof options.useColor === "boolean" ? options.useColor : supportsColor();
   const changedSourcePath = isNonEmptyString(options.changedSourcePath) ? path.resolve(options.changedSourcePath) : "";
@@ -153,8 +155,9 @@ function normalizeBuildConfig(inputConfig = {}, options = {}) {
     logger,
     useColor,
     changedSourcePath,
-    logPrefix: isNonEmptyString(source.logPrefix) ? source.logPrefix.trim() : DEFAULT_BUILD_LOG_PREFIX,
-    clean: normalizeBoolean(source.clean, false),
+    // Build log prefix is internal by design so the public config stays focused on build behavior only.
+    logPrefix: DEFAULT_BUILD_LOG_PREFIX,
+    clean: normalizeBoolean(source.clean, defaults.clean),
     sass: normalizeSassConfig(source.sass, cwd),
     js: normalizeJsConfig(source.js, cwd),
     copy: normalizeCopyTasks(source.copy, cwd),

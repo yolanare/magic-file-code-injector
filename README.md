@@ -63,20 +63,21 @@ npm run inject:build
 - serves `/js/*` from `js` (`js/dev` ignored)
 - runs an initial build on startup using `build` config
 - watches `css/dev` and `js/dev`: changes trigger rebuild, and compiled output refresh is injected automatically
-- manifest route: `/magic-file-code-injector.manifest.json`
 - host/port: `127.0.0.1:35888`
+- internal (not user-configurable): manifest route `/magic-file-code-injector.manifest.json`, project name and log prefixes
 
 ## Optional config
 
-Create `mfci.config.cjs`:
+The package ships a default template at:
+
+- `src/mfci.config.cjs`
+
+Create your project config (`mfci.config.cjs`) from this template:
 
 ```js
 module.exports = {
     host: '127.0.0.1',
     port: 35888,
-    manifestRoute: '/magic-file-code-injector.manifest.json',
-    project: 'magic-file-code-injector',
-    logPrefix: '[mfci-server]',
     files: [
         { type: 'css', dir: 'css', urlPrefix: '/css', extensions: ['.css'], ignoreDirs: ['dev'] },
         { type: 'js', dir: 'js', urlPrefix: '/js', extensions: ['.js', '.mjs'], ignoreDirs: ['dev'] },
@@ -84,7 +85,6 @@ module.exports = {
     watch: ['css', 'js'],
     build: {
         clean: false,
-        logPrefix: '[mfci-build]',
         sass: {
             enabled: true,
             srcDir: 'css/dev',

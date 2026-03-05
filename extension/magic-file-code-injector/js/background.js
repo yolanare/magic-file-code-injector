@@ -1,20 +1,23 @@
-const STORAGE_KEY = "magicFileCodeInjectorState";
-const DEFAULT_STATE = {
-  global: {
-    host: "127.0.0.1",
-    port: 35888,
-  },
-  hosts: {},
-};
-
-const DEFAULT_HOST_STATE = {
-  enabledFileIds: [],
-  autoRefreshJs: false,
-  pendingJsUpdateIds: [],
-  lastError: "",
-};
-
-const MANIFEST_ROUTE = "/magic-file-code-injector.manifest.json";
+// Load pure helpers once so this service-worker file stays focused on side effects and orchestration.
+importScripts("js/background-utils.js");
+const {
+  STORAGE_KEY,
+  DEFAULT_HOST_STATE,
+  uniqueStrings,
+  normalizeHostState,
+  normalizeState,
+  getServerOrigin,
+  getManifestUrl,
+  normalizeChangedPath,
+  inferFileTypeFromPath,
+  normalizePathFromFileId,
+  getHostKey,
+  normalizeManifestFile,
+  resolveFileUrl,
+  formatRefreshLogMessage,
+  sortedHostEntries,
+  toOptionsHostState,
+} = self.MfciBackgroundUtils;
 
 let socket = null;
 let socketUrl = "";
@@ -36,166 +39,6 @@ const SOCKET_EVENT_BATCH_WINDOW_MS = 150;
 let pendingSocketEvents = [];
 let socketBatchTimer = null;
 let socketBatchInFlight = false;
-
-/**
- * Deduplicate string lists before persisting state to keep storage deterministic.
- * @param {any} values - List of candidate values to normalize before persistence.
- * @returns {string[]} Deduplicated string list.
- */
-function uniqueStrings(values) {
-  return Array.from(new Set(values.filter((value) => typeof value === "string")));
-}
-
-/**
- * Normalize per-host settings to protect runtime logic from malformed stored values.
- * @param {any} input - Raw value loaded from config, storage, or message payload.
- * @returns {object} Normalized per-host settings object.
- */
-function normalizeHostState(input) {
-  const source = input && typeof input === "object" ? input : {};
-
-  return {
-    enabledFileIds: uniqueStrings(Array.isArray(source.enabledFileIds) ? source.enabledFileIds : []),
-    autoRefreshJs: source.autoRefreshJs === true,
-    pendingJsUpdateIds: uniqueStrings(Array.isArray(source.pendingJsUpdateIds) ? source.pendingJsUpdateIds : []),
-    lastError: typeof source.lastError === "string" ? source.lastError : "",
-  };
-}
-
-/**
- * Normalize full extension state loaded from storage into a safe in-memory shape.
- * @param {any} input - Raw value loaded from config, storage, or message payload.
- * @returns {object} Normalized full extension state.
- */
-function normalizeState(input) {
-  const source = input && typeof input === "object" ? input : {};
-  const globalState = source.global && typeof source.global === "object" ? source.global : {};
-
-  const host = typeof globalState.host === "string" && globalState.host.trim().length > 0 ? globalState.host.trim() : DEFAULT_STATE.global.host;
-
-  const parsedPort = Number(globalState.port);
-  const port = Number.isInteger(parsedPort) && parsedPort >= 1 && parsedPort <= 65535 ? parsedPort : DEFAULT_STATE.global.port;
-
-  const hosts = {};
-  if (source.hosts && typeof source.hosts === "object") {
-    for (const [hostKey, hostState] of Object.entries(source.hosts)) {
-      hosts[hostKey] = normalizeHostState(hostState);
-    }
-  }
-
-  return {
-    global: { host, port },
-    hosts,
-  };
-}
-
-/**
- * Build the dev-server origin used for manifest and file fetches.
- * @param {any} globalState - Global server settings stored by the extension.
- * @returns {string} HTTP origin of local dev server.
- */
-function getServerOrigin(globalState) {
-  return `http://${globalState.host}:${globalState.port}`;
-}
-
-/**
- * Build manifest URL from current global server configuration.
- * @param {any} globalState - Global server settings stored by the extension.
- * @returns {string} Full manifest URL.
- */
-function getManifestUrl(globalState) {
-  return `${getServerOrigin(globalState)}${MANIFEST_ROUTE}`;
-}
-
-/**
- * Normalize LiveReload payload paths so matching against manifest entries is reliable.
- * @param {any} value - Raw value to sanitize or normalize before runtime usage.
- * @returns {string} Canonical lowercase path used for comparisons.
- */
-function normalizeChangedPath(value) {
-  if (typeof value !== "string" || value.trim().length === 0) {
-    return "";
-  }
-
-  let normalized = value.trim().replace(/\\/g, "/");
-
-  try {
-    // LiveReload can send full URLs or relative paths depending on the sender.
-    normalized = new URL(normalized).pathname;
-  } catch (_error) {
-    // Keep original value when not a full URL.
-  }
-
-  const hashIndex = normalized.indexOf("#");
-  if (hashIndex >= 0) {
-    normalized = normalized.slice(0, hashIndex);
-  }
-
-  const queryIndex = normalized.indexOf("?");
-  if (queryIndex >= 0) {
-    normalized = normalized.slice(0, queryIndex);
-  }
-
-  if (!normalized.startsWith("/")) {
-    normalized = `/${normalized}`;
-  }
-
-  return normalized.toLowerCase();
-}
-
-/**
- * Infer file type from a path to decide CSS refresh vs JS reload behavior.
- * @param {any} value - Raw value to sanitize or normalize before runtime usage.
- * @returns {"css"|"js"|""} File type inferred from path extension.
- */
-function inferFileTypeFromPath(value) {
-  const normalized = normalizeChangedPath(value);
-
-  if (normalized.endsWith(".css")) {
-    return "css";
-  }
-
-  if (normalized.endsWith(".js") || normalized.endsWith(".mjs")) {
-    return "js";
-  }
-
-  return "";
-}
-
-/**
- * Extract and normalize the path segment from a manifest file id (`type:/path/file.ext`).
- * @param {any} fileId - Stable manifest file identifier (type:path).
- * @returns {string} Normalized path segment, or empty string when id is malformed.
- */
-function normalizePathFromFileId(fileId) {
-  if (typeof fileId !== "string") {
-    return "";
-  }
-
-  const separatorIndex = fileId.indexOf(":");
-  if (separatorIndex < 0) {
-    return "";
-  }
-
-  return normalizeChangedPath(fileId.slice(separatorIndex + 1));
-}
-
-/**
- * Extract a stable host key from a tab URL for per-domain settings storage.
- * @param {any} urlValue - URL-like value to parse or normalize.
- * @returns {string|null} Host key for persisted settings, or null for unsupported URLs.
- */
-function getHostKey(urlValue) {
-  try {
-    const parsed = new URL(urlValue);
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      return null;
-    }
-    return parsed.hostname;
-  } catch (_error) {
-    return null;
-  }
-}
 
 /**
  * Promisify chrome.storage.get for easier async flow handling.
@@ -308,35 +151,6 @@ async function logToBrowserTabConsole(tabId, level, message) {
 }
 
 /**
- * Render a concise file-id list for browser-console logs.
- * @param {string[]} fileIds - Affected file IDs involved in one refresh action.
- * @returns {string} Human-readable list label.
- */
-function formatFileIdList(fileIds) {
-  const uniqueIds = uniqueStrings(Array.isArray(fileIds) ? fileIds : []);
-  if (uniqueIds.length === 0) {
-    return "unknown file";
-  }
-  if (uniqueIds.length === 1) {
-    return uniqueIds[0];
-  }
-  return uniqueIds.join(", ");
-}
-
-/**
- * Build a unified browser-console message for batched refresh logs across file types.
- * @param {"css"|"js"} fileType - File category processed by the batch.
- * @param {string[]} fileIds - Affected file IDs included in the batch.
- * @param {boolean} fullReload - Whether refresh required a full page reload.
- * @returns {string} Human-readable refresh log line.
- */
-function formatRefreshLogMessage(fileType, fileIds, fullReload) {
-  const typeLabel = fileType === "js" ? "JS" : "CSS";
-  const suffix = fullReload ? " (full page reload)" : "";
-  return `[mfci] ${typeLabel} refreshed: ${formatFileIdList(fileIds)}${suffix}`;
-}
-
-/**
  * Promisify tab reload so JS auto-refresh flows can await completion triggers.
  * @param {any} tabId - Chrome tab identifier to target.
  * @returns {Promise<void>} Resolves once reload command is accepted.
@@ -409,54 +223,6 @@ function getExistingHostState(state, hostKey) {
   }
 
   return state.hosts[hostKey] ? normalizeHostState(state.hosts[hostKey]) : { ...DEFAULT_HOST_STATE };
-}
-
-/**
- * Normalize raw manifest entries into extension-ready file descriptors.
- * @param {any} file - Manifest or build file descriptor currently processed.
- * @returns {object|null} Normalized manifest file or null when invalid.
- */
-function normalizeManifestFile(file) {
-  if (!file || typeof file !== "object") {
-    return null;
-  }
-
-  const type = file.type === "css" || file.type === "js" ? file.type : null;
-  const pathValue = typeof file.path === "string" && file.path.length > 0 ? file.path : null;
-
-  if (!type || !pathValue) {
-    return null;
-  }
-
-  const id = typeof file.id === "string" && file.id.length > 0 ? file.id : `${type}:${pathValue}`;
-  const normalizedPath = /^https?:\/\//.test(pathValue) ? pathValue : pathValue.startsWith("/") ? pathValue : `/${pathValue}`;
-
-  const normalized = {
-    id,
-    type,
-    path: normalizedPath,
-    label: typeof file.label === "string" && file.label.length > 0 ? file.label : normalizedPath.split("/").pop() || id,
-  };
-
-  if (type === "js") {
-    normalized.scriptType = file.scriptType === "module" ? "module" : "script";
-  }
-
-  return normalized;
-}
-
-/**
- * Resolve a manifest file path to an absolute URL fetchable by background script.
- * @param {any} file - Manifest or build file descriptor currently processed.
- * @param {any} origin - Server origin used to resolve absolute file URLs.
- * @returns {string} Absolute file URL.
- */
-function resolveFileUrl(file, origin) {
-  if (/^https?:\/\//.test(file.path)) {
-    return file.path;
-  }
-
-  return `${origin}${file.path}`;
 }
 
 /**
@@ -660,30 +426,6 @@ async function buildPopupModel() {
       websocketError: socketError,
       error: serverError,
     },
-  };
-}
-
-/**
- * Sort host entries for deterministic options-page rendering.
- * @param {any} hosts - Map of host states keyed by domain.
- * @returns {Array<[string,object]>} Host entries sorted by domain.
- */
-function sortedHostEntries(hosts) {
-  return Object.entries(hosts)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([hostKey, hostState]) => [hostKey, normalizeHostState(hostState)]);
-}
-
-/**
- * Project host state to the subset exposed by options UI.
- * @param {any} hostState - Per-site configuration including enabled files and JS refresh mode.
- * @returns {object} Host state projection used by options UI.
- */
-function toOptionsHostState(hostState) {
-  const normalized = normalizeHostState(hostState);
-  return {
-    enabledFileIds: normalized.enabledFileIds,
-    autoRefreshJs: normalized.autoRefreshJs,
   };
 }
 

@@ -4,28 +4,9 @@ const portFormElement = document.getElementById("port-form");
 const portInputElement = document.getElementById("port-input");
 const siteListElement = document.getElementById("site-list");
 const refreshOptionsElement = document.getElementById("refresh-options");
+const { sendRuntimeMessage, setStatusMessage } = self.MfciRuntimeUtils;
 
 let model = null;
-
-/**
- * Send a runtime message and return a Promise for UI-friendly async handling.
- * @param {any} payload - Message or payload object exchanged between extension components.
- * @returns {Promise<any>} Response payload from background script.
- */
-function sendMessage(payload) {
-  return new Promise((resolve, reject) => {
-    chrome.runtime.sendMessage(payload, (response) => {
-      // Normalize callback-style Chrome APIs into Promise flow for predictable async UI updates.
-      const runtimeError = chrome.runtime.lastError;
-      if (runtimeError) {
-        reject(new Error(runtimeError.message));
-        return;
-      }
-
-      resolve(response);
-    });
-  });
-}
 
 /**
  * Render status text with error styling support.
@@ -34,8 +15,7 @@ function sendMessage(payload) {
  * @returns {void} Updates status area content and error style.
  */
 function setStatus(message, isError) {
-  statusMessageElement.textContent = message;
-  statusMessageElement.classList.toggle("status-error", isError);
+  setStatusMessage(statusMessageElement, message, isError);
 }
 
 /**
@@ -111,7 +91,7 @@ function createSiteRow(hostKey, hostState) {
       return;
     }
 
-    const response = await sendMessage({
+    const response = await sendRuntimeMessage({
       type: "OPTIONS_DELETE_HOST",
       hostKey,
     });
@@ -184,7 +164,7 @@ function render() {
  */
 async function refreshModel() {
   try {
-    const response = await sendMessage({ type: "OPTIONS_GET_MODEL" });
+    const response = await sendRuntimeMessage({ type: "OPTIONS_GET_MODEL" });
     model = response;
     render();
   } catch (error) {
@@ -196,7 +176,7 @@ portFormElement.addEventListener("submit", async (event) => {
   event.preventDefault();
 
   const port = Number(portInputElement.value);
-  const response = await sendMessage({
+  const response = await sendRuntimeMessage({
     type: "OPTIONS_SET_PORT",
     port,
   });

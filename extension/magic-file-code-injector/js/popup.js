@@ -6,28 +6,9 @@ const pendingJsElement = document.getElementById("pending-js");
 const filesListElement = document.getElementById("files-list");
 const refreshButtonElement = document.getElementById("refresh-model");
 const openOptionsButtonElement = document.getElementById("open-options");
+const { sendRuntimeMessage, setStatusMessage } = self.MfciRuntimeUtils;
 
 let model = null;
-
-/**
- * Send a runtime message and return a Promise for UI-friendly async handling.
- * @param {any} payload - Message or payload object exchanged between extension components.
- * @returns {Promise<any>} Response payload from background script.
- */
-function sendMessage(payload) {
-  return new Promise((resolve, reject) => {
-    chrome.runtime.sendMessage(payload, (response) => {
-      // Normalize callback-style Chrome APIs into Promise flow for predictable async UI updates.
-      const runtimeError = chrome.runtime.lastError;
-      if (runtimeError) {
-        reject(new Error(runtimeError.message));
-        return;
-      }
-
-      resolve(response);
-    });
-  });
-}
 
 /**
  * Persist the enabled-file selection for current host then refresh popup model.
@@ -35,7 +16,7 @@ function sendMessage(payload) {
  * @returns {Promise<void>} Saves selection and reloads popup state.
  */
 async function updateEnabledFileSelection(nextSelection) {
-  await sendMessage({
+  await sendRuntimeMessage({
     type: "POPUP_SET_ENABLED_FILES",
     hostKey: model.hostKey,
     tabId: model.tabId,
@@ -153,8 +134,7 @@ function createMissingFileRow(fileId, enabledFileIds) {
  * @returns {void} Updates status area content and error style.
  */
 function setStatus(message, isError) {
-  statusMessageElement.textContent = message;
-  statusMessageElement.classList.toggle("status-error", isError);
+  setStatusMessage(statusMessageElement, message, isError);
 }
 
 /**
@@ -240,7 +220,7 @@ function render() {
  */
 async function refreshModel() {
   try {
-    const response = await sendMessage({ type: "POPUP_GET_MODEL" });
+    const response = await sendRuntimeMessage({ type: "POPUP_GET_MODEL" });
     model = response;
     render();
   } catch (error) {
@@ -253,7 +233,7 @@ autoRefreshJsElement.addEventListener("change", async () => {
     return;
   }
 
-  await sendMessage({
+  await sendRuntimeMessage({
     type: "POPUP_SET_AUTO_REFRESH_JS",
     hostKey: model.hostKey,
     autoRefreshJs: autoRefreshJsElement.checked,
@@ -263,7 +243,7 @@ autoRefreshJsElement.addEventListener("change", async () => {
 });
 
 refreshButtonElement.addEventListener("click", async () => {
-  await sendMessage({ type: "POPUP_FORCE_SYNC" });
+  await sendRuntimeMessage({ type: "POPUP_FORCE_SYNC" });
   await refreshModel();
 });
 

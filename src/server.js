@@ -5,33 +5,24 @@ const path = require('node:path');
 const livereload = require('livereload');
 const { normalizeBuildConfig, runBuild } = require('./build');
 const { formatLogLine, formatPath, supportsColor } = require('./log-format');
+const DEFAULT_TEMPLATE = require('./mfci.config.cjs');
+const {
+    ensureLeadingSlash,
+    normalizePort,
+    normalizeType,
+    defaultExtensionsForType,
+    defaultUrlPrefixForType,
+    toForwardSlashes,
+    inferReloadType,
+    isPathInside,
+    isPathInsideOrSame,
+} = require('./server-utils');
 
-const DEFAULT_MANIFEST_ROUTE = '/magic-file-code-injector.manifest.json';
-const DEFAULT_HOST = '127.0.0.1';
-const DEFAULT_PORT = 35888;
-const DEFAULT_PROJECT_NAME = 'magic-file-code-injector';
-const DEFAULT_LOG_PREFIX = '[mfci]';
+const INTERNAL_MANIFEST_ROUTE = '/magic-file-code-injector.manifest.json';
+const INTERNAL_PROJECT_NAME = 'magic-file-code-injector';
+const INTERNAL_LOG_PREFIX = '[mfci]';
 const DEFAULT_IGNORED_DIRS = ['dev'];
 const REFRESH_BATCH_WINDOW_MS = 150;
-
-const DEFAULT_FILE_DEFINITIONS = [
-    {
-        type: 'css',
-        dir: 'css',
-        urlPrefix: '/css',
-        extensions: ['.css'],
-        ignoreDirs: ['dev'],
-    },
-    {
-        type: 'js',
-        dir: 'js',
-        urlPrefix: '/js',
-        extensions: ['.js', '.mjs'],
-        ignoreDirs: ['dev'],
-    },
-];
-
-const DEFAULT_WATCH_DIRS = ['css', 'js'];
 
 const MIME_TYPES = {
     '.css': 'text/css; charset=utf-8',
@@ -43,71 +34,13 @@ const MIME_TYPES = {
 };
 
 /**
- * Ensure route-like values always start with "/" so URL matching stays deterministic.
- * @param {any} value - Raw value to sanitize or normalize before runtime usage.
- * @returns {string} Normalized route path starting with "/".
- */
-function ensureLeadingSlash(value) {
-    if (typeof value !== 'string' || value.trim().length === 0) {
-        return '/';
-    }
-    return value.startsWith('/') ? value : `/${value}`;
-}
-
-/**
- * Validate and normalize a port value to avoid invalid runtime socket/server binding.
- * @param {any} value - Raw value to sanitize or normalize before runtime usage.
- * @returns {number} Valid port value, or default port when invalid.
- */
-function normalizePort(value) {
-    const parsed = Number(value);
-    if (Number.isInteger(parsed) && parsed >= 1 && parsed <= 65535) {
-        return parsed;
-    }
-    return DEFAULT_PORT;
-}
-
-/**
- * Collapse file type values to the supported set used by manifest and injection flows.
- * @param {any} typeValue - Candidate file type value from config or runtime input.
- * @returns {"css"|"js"} Supported file type key.
- */
-function normalizeType(typeValue) {
-    return typeValue === 'js' ? 'js' : 'css';
-}
-
-/**
- * Provide extension defaults per file type so config can stay minimal.
- * @param {any} typeValue - Candidate file type value from config or runtime input.
- * @returns {string[]} Default extension list for the provided type.
- */
-function defaultExtensionsForType(typeValue) {
-    if (typeValue === 'js') {
-        return ['.js', '.mjs'];
-    }
-    return ['.css'];
-}
-
-/**
- * Provide serving URL defaults per file type to keep extension paths predictable.
- * @param {any} typeValue - Candidate file type value from config or runtime input.
- * @returns {string} Default public URL prefix for the provided type.
- */
-function defaultUrlPrefixForType(typeValue) {
-    if (typeValue === 'js') {
-        return '/js';
-    }
-    return '/css';
-}
-
-/**
  * Normalize one file definition into a safe runtime descriptor used by HTTP serving and manifest generation.
  * @param {any} definition - Normalized or raw file definition describing exposed source files.
  * @param {any} cwd - Working directory used to resolve relative paths.
  * @returns {object} Runtime-safe file definition with resolved paths and ignore rules.
  */
 function normalizeFileDefinition(definition, cwd) {
-    const source = definition && typeof definition === 'object' ? definition : {};
+    const source = definition || {};
     const type = normalizeType(source.type);
     const dir =
         typeof source.dir === 'string' && source.dir.trim().length > 0 ? source.dir.trim()
@@ -159,36 +92,26 @@ function normalizeFileDefinition(definition, cwd) {
  * @returns {object} Fully normalized server configuration.
  */
 function normalizeConfig(inputConfig = {}, options = {}) {
+    const defaults = DEFAULT_TEMPLATE;
     const cwd = options.cwd || process.cwd();
-    const source = inputConfig && typeof inputConfig === 'object' ? inputConfig : {};
+    const source = inputConfig || {};
     const useColor = typeof options.useColor === 'boolean' ? options.useColor : supportsColor();
 
     const host =
         typeof source.host === 'string' && source.host.trim().length > 0 ?
             source.host.trim()
-        :   DEFAULT_HOST;
+        :   defaults.host;
 
-    const port = normalizePort(source.port ?? DEFAULT_PORT);
-    const manifestRoute = ensureLeadingSlash(
-        typeof source.manifestRoute === 'string' && source.manifestRoute.trim().length > 0 ?
-            source.manifestRoute.trim()
-        :   DEFAULT_MANIFEST_ROUTE
-    );
-    const projectName =
-        typeof source.project === 'string' && source.project.trim().length > 0 ?
-            source.project.trim()
-        :   DEFAULT_PROJECT_NAME;
-    const logPrefix =
-        typeof source.logPrefix === 'string' && source.logPrefix.trim().length > 0 ?
-            source.logPrefix.trim()
-        :   DEFAULT_LOG_PREFIX;
+    const port = normalizePort(source.port ?? defaults.port, defaults.port);
+    // These values are intentionally internal to avoid expanding the public config surface.
+    const manifestRoute = INTERNAL_MANIFEST_ROUTE;
+    const projectName = INTERNAL_PROJECT_NAME;
+    const logPrefix = INTERNAL_LOG_PREFIX;
 
-    const fileDefinitionsInput =
-        Array.isArray(source.files) && source.files.length > 0 ? source.files : DEFAULT_FILE_DEFINITIONS;
+    const fileDefinitionsInput = Array.isArray(source.files) && source.files.length > 0 ? source.files : defaults.files;
     const fileDefinitions = fileDefinitionsInput.map((definition) => normalizeFileDefinition(definition, cwd));
 
-    const watchDefinitionsInput =
-        Array.isArray(source.watch) && source.watch.length > 0 ? source.watch : DEFAULT_WATCH_DIRS;
+    const watchDefinitionsInput = Array.isArray(source.watch) && source.watch.length > 0 ? source.watch : defaults.watch;
     const watchDirs = watchDefinitionsInput
         .map((directory) => String(directory || '').trim())
         .filter(Boolean)
@@ -215,7 +138,7 @@ function normalizeConfig(inputConfig = {}, options = {}) {
  * @returns {object} Normalized build configuration.
  */
 function normalizeServerBuildConfig(inputConfig, cwd) {
-    const source = inputConfig && typeof inputConfig === 'object' ? inputConfig : {};
+    const source = inputConfig || {};
     const buildSection = source.build && typeof source.build === 'object' ? source.build : {};
     return normalizeBuildConfig(buildSection, { cwd });
 }
@@ -245,44 +168,6 @@ function collectWatchedExtensions(config, buildConfig) {
     }
 
     return Array.from(extensions).filter(Boolean);
-}
-
-/**
- * Map a changed path to a reload category used for logging and LiveReload signaling.
- * @param {any} filePath - Filesystem path or changed path used by the current operation.
- * @returns {"css"|"js"|"asset"} Reload category for logs and notifications.
- */
-function inferReloadType(filePath) {
-    const extension = path.extname(String(filePath || '')).toLowerCase();
-    if (extension === '.css') {
-        return 'css';
-    }
-    if (extension === '.js' || extension === '.mjs') {
-        return 'js';
-    }
-    return 'asset';
-}
-
-/**
- * Protect against path traversal by ensuring a target stays inside the configured root.
- * @param {any} basePath - Base directory used for containment checks.
- * @param {any} targetPath - Target path to validate against a base directory.
- * @returns {boolean} True when target path stays strictly inside base path.
- */
-function isPathInside(basePath, targetPath) {
-    const relativePath = path.relative(basePath, targetPath);
-    return relativePath !== '' && !relativePath.startsWith('..') && !path.isAbsolute(relativePath);
-}
-
-/**
- * Variant of path containment check that also accepts the exact same path.
- * @param {any} basePath - Base directory used for containment checks.
- * @param {any} targetPath - Target path to validate against a base directory.
- * @returns {boolean} True when target is inside base path or equal to it.
- */
-function isPathInsideOrSame(basePath, targetPath) {
-    const relativePath = path.relative(basePath, targetPath);
-    return relativePath === '' || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath));
 }
 
 /**
@@ -360,15 +245,6 @@ function createScopedBuildConfig(buildConfig, sourcePath) {
     }
 
     return scoped;
-}
-
-/**
- * Normalize path separators to web format for manifest URLs across operating systems.
- * @param {any} value - Raw value to sanitize or normalize before runtime usage.
- * @returns {string} Path with POSIX separators.
- */
-function toForwardSlashes(value) {
-    return value.split(path.sep).join('/');
 }
 
 /**
@@ -921,13 +797,10 @@ function startDevServer(inputConfig = {}, options = {}) {
 }
 
 module.exports = {
-    DEFAULT_MANIFEST_ROUTE,
-    DEFAULT_HOST,
-    DEFAULT_PORT,
-    DEFAULT_PROJECT_NAME,
-    DEFAULT_LOG_PREFIX,
-    DEFAULT_FILE_DEFINITIONS,
-    DEFAULT_WATCH_DIRS,
+    DEFAULT_HOST: DEFAULT_TEMPLATE.host,
+    DEFAULT_PORT: DEFAULT_TEMPLATE.port,
+    DEFAULT_FILE_DEFINITIONS: DEFAULT_TEMPLATE.files,
+    DEFAULT_WATCH_DIRS: DEFAULT_TEMPLATE.watch,
     normalizeConfig,
     startDevServer,
 };

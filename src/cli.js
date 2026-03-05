@@ -1,6 +1,5 @@
-const fs = require('node:fs');
-const path = require('node:path');
 const { startDevServer } = require('./server');
+const { DEFAULT_CONFIG_FILE, loadRuntimeConfig } = require('./config-loader');
 
 /**
  * Print CLI usage details so commands remain discoverable without external documentation.
@@ -28,7 +27,7 @@ Options:
  */
 function parseArgs(argv) {
     const parsed = {
-        configPath: 'mfci.config.cjs',
+        configPath: DEFAULT_CONFIG_FILE,
         host: '',
         port: null,
         help: false,
@@ -66,23 +65,6 @@ function parseArgs(argv) {
 }
 
 /**
- * Load and validate a local config module when present.
- * @param {any} configPath - Path to the configuration file relative to cwd.
- * @param {any} cwd - Working directory used to resolve relative paths.
- * @returns {object} Loaded config object or empty object when file is absent.
- */
-function loadConfigFromFile(configPath, cwd) {
-    const resolvedPath = path.resolve(cwd, configPath);
-    if (!fs.existsSync(resolvedPath)) {
-        return {};
-    }
-
-    delete require.cache[resolvedPath];
-    const loaded = require(resolvedPath);
-    return loaded && typeof loaded === 'object' ? loaded : {};
-}
-
-/**
  * Run the dev-server CLI entrypoint with optional command-line overrides.
  * @param {any} argv - Command-line arguments passed to the CLI entrypoint.
  * @param {any} runtimeOptions - Runtime overrides used by test harnesses or bin wrappers.
@@ -97,16 +79,15 @@ function runCli(argv = process.argv.slice(2), runtimeOptions = {}) {
         return null;
     }
 
-    const config = loadConfigFromFile(parsed.configPath, cwd);
-
-    // CLI arguments take precedence over config file values.
-    if (parsed.host) {
-        config.host = parsed.host;
-    }
-
-    if (parsed.port !== null) {
-        config.port = parsed.port;
-    }
+    // CLI flags are intentionally applied last to keep local one-off overrides explicit.
+    const config = loadRuntimeConfig({
+        cwd,
+        configPath: parsed.configPath,
+        overrides: {
+            ...(parsed.host ? { host: parsed.host } : {}),
+            ...(parsed.port !== null ? { port: parsed.port } : {}),
+        },
+    });
 
     return startDevServer(config, {
         cwd,

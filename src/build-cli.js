@@ -1,6 +1,5 @@
-const fs = require("node:fs");
-const path = require("node:path");
 const { runBuild } = require("./build");
+const { DEFAULT_CONFIG_FILE, loadRuntimeConfig, resolveBuildConfig } = require("./config-loader");
 
 /**
  * Print CLI usage details so commands remain discoverable without external documentation.
@@ -27,7 +26,7 @@ Options:
  */
 function parseArgs(argv) {
   const parsed = {
-    configPath: "mfci.config.cjs",
+    configPath: DEFAULT_CONFIG_FILE,
     clean: false,
     help: false,
   };
@@ -56,35 +55,6 @@ function parseArgs(argv) {
 }
 
 /**
- * Load and validate a local config module when present.
- * @param {any} configPath - Path to the configuration file relative to cwd.
- * @param {any} cwd - Working directory used to resolve relative paths.
- * @returns {object} Loaded config object or empty object when file is absent.
- */
-function loadConfigFromFile(configPath, cwd) {
-  const resolvedPath = path.resolve(cwd, configPath);
-  if (!fs.existsSync(resolvedPath)) {
-    return {};
-  }
-
-  delete require.cache[resolvedPath];
-  const loaded = require(resolvedPath);
-  return loaded && typeof loaded === "object" ? loaded : {};
-}
-
-/**
- * Extract the build section from config to isolate build concerns from server settings.
- * @param {any} loadedConfig - Config object loaded from disk before extraction.
- * @returns {object} Build config section extracted from loaded config.
- */
-function resolveBuildConfig(loadedConfig) {
-  if (loadedConfig && typeof loadedConfig.build === "object" && loadedConfig.build) {
-    return loadedConfig.build;
-  }
-  return {};
-}
-
-/**
  * Run the build CLI entrypoint with optional command-line overrides.
  * @param {any} argv - Command-line arguments passed to the CLI entrypoint.
  * @param {any} runtimeOptions - Runtime overrides used by test harnesses or bin wrappers.
@@ -99,8 +69,8 @@ async function runBuildCli(argv = process.argv.slice(2), runtimeOptions = {}) {
     return null;
   }
 
-  const loadedConfig = loadConfigFromFile(parsed.configPath, cwd);
-  const buildConfig = resolveBuildConfig(loadedConfig);
+  const runtimeConfig = loadRuntimeConfig({ cwd, configPath: parsed.configPath });
+  const buildConfig = resolveBuildConfig(runtimeConfig);
 
   // `--clean` is an explicit runtime override for local one-off builds.
   if (parsed.clean) {
