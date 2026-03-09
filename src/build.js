@@ -456,6 +456,44 @@ async function runStaticHtmlExports(config) {
 }
 
 /**
+ * Export one changed output file to HTML when it belongs to CSS/JS output roots.
+ * @param {any} inputConfig - Raw configuration object provided by caller or config file.
+ * @param {any} outputFilePath - Changed output file path detected by dev-server.
+ * @param {any} options - Runtime options that override or complement loaded config.
+ * @returns {Promise<number>} Number of HTML files exported from this single output file (0 or 1).
+ */
+async function exportOutputFileAsHtml(inputConfig = {}, outputFilePath, options = {}) {
+  const config = normalizeBuildConfig(inputConfig, options);
+  const absolutePath = path.resolve(String(outputFilePath || ""));
+  const extension = path.extname(absolutePath).toLowerCase();
+
+  if (!fs.existsSync(absolutePath)) {
+    return 0;
+  }
+
+  if (
+    config.exportHtml.css &&
+    extension === ".css" &&
+    isPathInsideOrSame(config.sass.outDir, absolutePath) &&
+    !isPathInsideOrSame(config.sass.srcDir, absolutePath)
+  ) {
+    const cssText = await fsPromises.readFile(absolutePath, "utf8");
+    return exportCssAsHtml(config, config.sass, absolutePath, cssText);
+  }
+
+  if (
+    config.exportHtml.js &&
+    (extension === ".js" || extension === ".mjs") &&
+    isPathInsideOrSame(config.js.outDir, absolutePath) &&
+    !isPathInsideOrSame(config.js.srcDir, absolutePath)
+  ) {
+    return exportJsAsHtml(config, config.js, absolutePath);
+  }
+
+  return 0;
+}
+
+/**
  * Map TS/JS-like input extensions to final JS output filenames.
  * @param {any} relativePath - Path relative to source root.
  * @param {any} extension - Source file extension used for output mapping.
@@ -738,5 +776,6 @@ module.exports = {
   DEFAULT_SASS_EXTENSIONS: DEFAULT_TEMPLATE.build.sass.extensions,
   DEFAULT_JS_EXTENSIONS: DEFAULT_TEMPLATE.build.js.extensions,
   normalizeBuildConfig,
+  exportOutputFileAsHtml,
   runBuild,
 };

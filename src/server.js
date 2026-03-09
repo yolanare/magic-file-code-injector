@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const fsPromises = require('node:fs/promises');
 const path = require('node:path');
 const livereload = require('livereload');
-const { normalizeBuildConfig, runBuild } = require('./build');
+const { normalizeBuildConfig, runBuild, exportOutputFileAsHtml } = require('./build');
 const { formatLogLine, formatPath, supportsColor } = require('./log-format');
 const DEFAULT_TEMPLATE = require('./mfci.config.cjs');
 const {
@@ -551,6 +551,7 @@ function startDevServer(inputConfig = {}, options = {}) {
     const pendingRefreshLogs = [];
     const pendingOutputRefreshByPath = new Map();
     let refreshBatchTimer = null;
+    let outputRefreshBatchInFlight = false;
 
     if (config.watchDirs.length === 0) {
         throw new Error(
@@ -624,7 +625,12 @@ function startDevServer(inputConfig = {}, options = {}) {
      * Flush queued output refreshes once the debounce window elapsed and no build is currently running.
      * @returns {void} Sends refresh events to LiveReload for queued output files.
      */
-    function flushOutputRefreshBatch() {
+    async function flushOutputRefreshBatch() {
+        if (outputRefreshBatchInFlight) {
+            scheduleOutputRefreshBatch();
+            return;
+        }
+
         if (pendingOutputRefreshByPath.size === 0) {
             return;
         }
@@ -634,12 +640,31 @@ function startDevServer(inputConfig = {}, options = {}) {
             return;
         }
 
+        outputRefreshBatchInFlight = true;
         const batchEntries = Array.from(pendingOutputRefreshByPath.entries()).sort(([left], [right]) => left.localeCompare(right));
         pendingOutputRefreshByPath.clear();
 
-        for (const [filePath, reloadType] of batchEntries) {
-            logRefreshSignal(filePath, reloadType);
-            originalRefresh(toLiveReloadPath(config, filePath));
+        try {
+            for (const [filePath, reloadType] of batchEntries) {
+                try {
+                    await exportOutputFileAsHtml(buildConfig, filePath, {
+                        cwd: config.cwd,
+                        logger: () => {},
+                        useColor: config.useColor,
+                    });
+                } catch (error) {
+                    const message = String(error && error.message ? error.message : error);
+                    logRefreshAction('warn', `HTML export skipped for ${formatServerPath(config, filePath)}: ${message}`);
+                }
+
+                logRefreshSignal(filePath, reloadType);
+                originalRefresh(toLiveReloadPath(config, filePath));
+            }
+        } finally {
+            outputRefreshBatchInFlight = false;
+            if (pendingOutputRefreshByPath.size > 0) {
+                scheduleOutputRefreshBatch();
+            }
         }
     }
 
@@ -654,7 +679,7 @@ function startDevServer(inputConfig = {}, options = {}) {
 
         refreshBatchTimer = setTimeout(() => {
             refreshBatchTimer = null;
-            flushOutputRefreshBatch();
+            void flushOutputRefreshBatch();
         }, REFRESH_BATCH_WINDOW_MS);
     }
 
