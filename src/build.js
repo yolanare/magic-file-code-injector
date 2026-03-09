@@ -301,6 +301,15 @@ function replaceExtension(filePath, extension) {
 }
 
 /**
+ * Remove leading CSS charset directives because output files are already written as UTF-8.
+ * @param {string} cssText - CSS content generated or copied by the build pipeline.
+ * @returns {string} CSS content without top-level `@charset`.
+ */
+function stripLeadingCssCharset(cssText) {
+  return String(cssText || "").replace(/^\uFEFF?\s*@charset\s+["'][^"']+["'];\s*/i, "");
+}
+
+/**
  * Resolve the HTML export target path under the configured root using one subfolder per output type.
  * @param {string} outputFile - Built output file (css/js).
  * @param {string} sourceOutDir - Build output directory that produced the file.
@@ -546,8 +555,9 @@ async function runSassBuild(config) {
     await ensureParentDirectory(outputFile);
 
     if (isPlainCss) {
-      // `.css` files are copied as-is so hand-authored CSS in `css/dev` keeps exact output.
-      await fsPromises.copyFile(inputFile, outputFile);
+      // Preserve plain CSS content while normalizing away `@charset` noise in compiled outputs.
+      const copiedCssText = stripLeadingCssCharset(await fsPromises.readFile(inputFile, "utf8"));
+      await fsPromises.writeFile(outputFile, copiedCssText, "utf8");
       logBuild(config, "success", `CSS copied: ${displayPathPair(config, inputFile, outputFile)}`);
       builtCount += 1;
       continue;
@@ -557,9 +567,10 @@ async function runSassBuild(config) {
       style: sassConfig.style,
       sourceMap: sassConfig.sourceMap,
       loadPaths: sassConfig.loadPaths,
+      charset: false,
     });
 
-    let cssText = compiled.css;
+    let cssText = stripLeadingCssCharset(compiled.css);
     if (sassConfig.sourceMap && compiled.sourceMap) {
       // Keep source map linkage explicit for browser devtools.
       const mapFile = `${outputFile}.map`;
