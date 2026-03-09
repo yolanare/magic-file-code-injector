@@ -251,4 +251,18 @@ openOptionsButtonElement.addEventListener("click", () => {
   chrome.runtime.openOptionsPage();
 });
 
-refreshModel();
+/**
+ * Initialize popup state by forcing one connection/sync cycle, then loading the latest model.
+ * @returns {Promise<void>} Completes after startup sync attempt and model refresh.
+ */
+async function initializePopup() {
+  try {
+    await sendRuntimeMessage({ type: "POPUP_FORCE_SYNC" });
+  } catch (_error) {
+    // Ignore startup sync failures here; refreshModel renders the actual status message.
+  }
+
+  await refreshModel();
+}
+
+initializePopup();

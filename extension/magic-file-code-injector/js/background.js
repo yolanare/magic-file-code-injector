@@ -26,6 +26,8 @@ let socketError = "";
 let reconnectTimer = null;
 let reconnectUntil = 0;
 let connectionLossLogged = false;
+let hasConnectedAtLeastOnce = false;
+let reconnectSuspended = false;
 
 const LR_PROTOCOLS = [
   "http://livereload.com/protocols/official-7",
@@ -459,12 +461,10 @@ async function buildOptionsModel() {
  * @returns {void} Clears reconnect timer state.
  */
 function stopReconnectLoop() {
-  if (!reconnectTimer) {
-    return;
+  if (reconnectTimer) {
+    clearInterval(reconnectTimer);
+    reconnectTimer = null;
   }
-
-  clearInterval(reconnectTimer);
-  reconnectTimer = null;
   reconnectUntil = 0;
 }
 
@@ -515,7 +515,7 @@ function logToBrowserConsole(level, message) {
  * @returns {void} Starts or keeps an active reconnect loop.
  */
 function scheduleReconnect() {
-  if (socketConnected) {
+  if (socketConnected || reconnectSuspended) {
     stopReconnectLoop();
     return;
   }
@@ -536,26 +536,42 @@ function scheduleReconnect() {
     }
 
     if (Date.now() >= reconnectUntil) {
-      socketError = "WebSocket reconnect timeout (20s).";
+      socketError = "WebSocket reconnect timeout (20s). Use Refresh to retry.";
+      reconnectSuspended = true;
       logToBrowserConsole("warn", "[mfci] Reconnect attempts stopped after 20s.");
       stopReconnectLoop();
       return;
     }
 
-    connectSocket().catch(() => {});
+    connectSocket({ reason: "reconnect" }).catch(() => {});
   }, RECONNECT_INTERVAL_MS);
 
   // Try once immediately instead of waiting for the first interval tick.
-  connectSocket().catch(() => {});
+  connectSocket({ reason: "reconnect" }).catch(() => {});
 }
 
 /**
  * Connect to LiveReload WebSocket and wire handshake plus event listeners.
+ * @param {any} options - Optional connection context (startup/manual/reconnect).
  * @returns {Promise<void>} Completes when socket setup is initialized.
  */
-async function connectSocket() {
+async function connectSocket(options = {}) {
+  const reason = typeof options.reason === "string" ? options.reason : "auto";
+  const isManual = reason === "manual";
+
+  if (reconnectSuspended && !isManual) {
+    return;
+  }
+
   const state = await loadState();
   const nextSocketUrl = `ws://${state.global.host}:${state.global.port}/livereload`;
+
+  if (isManual) {
+    reconnectSuspended = false;
+    socketError = "";
+    connectionLossLogged = false;
+    stopReconnectLoop();
+  }
 
   if (socket && socketUrl === nextSocketUrl && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
     return;
@@ -568,11 +584,16 @@ async function connectSocket() {
 
   socketConnected = false;
   socketUrl = nextSocketUrl;
-  socketError = "";
+  const currentSocket = new WebSocket(nextSocketUrl);
+  socket = currentSocket;
 
-  socket = new WebSocket(nextSocketUrl);
+  currentSocket.addEventListener("open", () => {
+    if (socket !== currentSocket) {
+      return;
+    }
 
-  socket.addEventListener("open", () => {
+    hasConnectedAtLeastOnce = true;
+    reconnectSuspended = false;
     socketConnected = true;
     socketError = "";
     stopReconnectLoop();
@@ -583,7 +604,7 @@ async function connectSocket() {
 
     try {
       // LiveReload handshake: required so the server starts sending reload notifications.
-      socket.send(
+      currentSocket.send(
         JSON.stringify({
           command: "hello",
           protocols: LR_PROTOCOLS,
@@ -595,20 +616,46 @@ async function connectSocket() {
     }
   });
 
-  socket.addEventListener("error", () => {
+  currentSocket.addEventListener("error", () => {
+    if (socket !== currentSocket) {
+      return;
+    }
+
     socketConnected = false;
+    if (!hasConnectedAtLeastOnce) {
+      socketError = "WebSocket connection failed at page load. Use Refresh to retry.";
+      reconnectSuspended = true;
+      stopReconnectLoop();
+      return;
+    }
+
     socketError = "WebSocket connection failed.";
     logConnectionLoss("error");
     scheduleReconnect();
   });
 
-  socket.addEventListener("close", () => {
+  currentSocket.addEventListener("close", () => {
+    if (socket !== currentSocket) {
+      return;
+    }
+
     socketConnected = false;
+    if (!hasConnectedAtLeastOnce) {
+      socketError = "WebSocket connection failed at page load. Use Refresh to retry.";
+      reconnectSuspended = true;
+      stopReconnectLoop();
+      return;
+    }
+
     logConnectionLoss("close");
     scheduleReconnect();
   });
 
-  socket.addEventListener("message", (event) => {
+  currentSocket.addEventListener("message", (event) => {
+    if (socket !== currentSocket) {
+      return;
+    }
+
     handleSocketMessage(event.data);
   });
 }
@@ -939,7 +986,7 @@ async function updatePort(message) {
   state.global.port = parsedPort;
   await saveState(state);
 
-  await connectSocket();
+  await connectSocket({ reason: "manual" });
   await applyToCurrentTab("port-change");
 
   return { ok: true };
@@ -1025,14 +1072,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return deleteHostSettings(message);
       case "POPUP_FORCE_SYNC":
         // Manual refresh should also force a new WebSocket connection attempt.
-        await connectSocket();
+        if (reconnectTimer && !socketConnected) {
+          return { ok: true, skipped: "reconnect-in-progress" };
+        }
+        await connectSocket({ reason: "manual" });
         await applyToCurrentTab("manual-sync");
         return { ok: true };
       case "MFCI_KEEPALIVE":
-        // Content scripts ping periodically so background can recover WS after service-worker sleeps/timeouts.
-        if (!socketConnected) {
-          await connectSocket().catch(() => {});
-        }
+        // Keepalive is intentionally passive: startup failures stay suspended until manual refresh.
         return { ok: true };
       case "MFCI_JS_INJECTION_ERROR":
         return recordInjectionError(sender, message);
@@ -1066,11 +1113,11 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 });
 
 chrome.runtime.onInstalled.addListener(() => {
-  connectSocket().catch(() => {});
+  connectSocket({ reason: "startup" }).catch(() => {});
 });
 
 chrome.runtime.onStartup.addListener(() => {
-  connectSocket().catch(() => {});
+  connectSocket({ reason: "startup" }).catch(() => {});
 });
 
-connectSocket().catch(() => {});
+connectSocket({ reason: "startup" }).catch(() => {});
