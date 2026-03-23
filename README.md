@@ -46,18 +46,19 @@ npm run build
 `mfci-build` defaults:
 
 - Sass/CSS input: `css/dev`
-- Sass/CSS output: `css`
+- Sass/CSS output: `css/public`
 - JS/TS input: `js/dev`
-- JS output: `js`
-- `css/dev` and `js/dev` are optional: if present, files are built to parent folders; if missing, build is skipped for that type.
-- files already in parent folders (`css/*`, `js/*`) are not transformed by `mfci-build`; they are served as-is.
+- JS output: `js/public`
+- HTML export output (when enabled): `css/html` and `js/html`
+- `css/dev` and `js/dev` are optional: if present, files are built to `public`; if missing, build is skipped for that type.
+- files already in `css/public/*` and `js/public/*` are not transformed by `mfci-build`; they are served as-is.
 
 `mfci-dev-server` defaults:
 
-- serves `/css/*` from `css` (`css/dev` ignored)
-- serves `/js/*` from `js` (`js/dev` ignored)
+- serves `/css/*` from `css/public`
+- serves `/js/*` from `js/public`
 - runs an initial build on startup using `build` config
-- watches `css/dev` and `js/dev`: changes trigger rebuild, and compiled output refresh is injected automatically
+- watches `css` and `js`: changes trigger rebuild/refresh for sources and public files
 - host/port: `127.0.0.1:35888`
 
 ## Config reference
@@ -87,37 +88,36 @@ Each entry describes one file group exposed in the extension manifest (CSS or JS
 | Option | Type | Default (css item) | Default (js item) | Description |
 | --- | --- | --- | --- | --- |
 | `type` | `'css' \| 'js'` | `'css'` | `'js'` | File family used by extension injection logic. |
-| `dir` | `string` | `'css'` | `'js'` | Local source directory exposed by server. |
+| `dir` | `string` | `'css/public'` | `'js/public'` | Public directory exposed by server for injection files. |
 | `urlPrefix` | `string` | `'/css'` | `'/js'` | Public URL prefix for served files. |
 | `extensions` | `string[]` | `['.css']` | `['.js', '.mjs']` | Extensions exposed in manifest for this family. |
-| `ignoreDirs` | `string[]` | `['dev']` | `['dev']` | Subdirectories ignored from exposed manifest files. |
 
 #### `build` options
 
 Unified build section:
 
-- `build.exportHtml` generates `.html` files from compiled CSS/JS.
-- `build.sass` compiles `css/dev` into `css`.
-- `build.js` compiles `js/dev` into `js`.
+- `build.exportHtml` generates `.html` files into language folders (`css/html`, `js/html` by default).
+- `build.sass` compiles `css/dev` into `css/public`.
+- `build.js` compiles `js/dev` into `js/public`.
 - `build.copy` runs additional directory copy tasks after compilation.
-- HTML exports are generated after build steps complete by scanning final `css`/`js` outputs (excluding `css/dev` and `js/dev`).
+- HTML exports are generated after build steps complete by scanning `css/public` and `js/public` outputs (excluding `dev` sources).
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
 | `build.clean` | `boolean` | `false` | Clears build output folders before build starts. |
 | `build.exportHtml.css` | `boolean` | `false` | When `true`, exports CSS as `.html` with `<style>...</style>`. |
 | `build.exportHtml.js` | `boolean` | `false` | When `true`, exports JS as `.html` with `<script>...</script>`. |
-| `build.exportHtml.outDir` | `string` | `'dist'` | Root output directory for HTML exports, grouped by output family (`dist/css`, `dist/js`). |
+| `build.exportHtml.dirName` | `string` | `'html'` | Folder name used under each language root (`css/html`, `js/html`). |
 | `build.sass.enabled` | `boolean` | `true` | Enables Sass/CSS build step. |
 | `build.sass.srcDir` | `string` | `'css/dev'` | Input directory for Sass/CSS sources. |
-| `build.sass.outDir` | `string` | `'css'` | Output directory for compiled CSS files. |
+| `build.sass.outDir` | `string` | `'css/public'` | Output directory for compiled CSS files. |
 | `build.sass.extensions` | `string[]` | `['.scss', '.sass', '.css']` | Source extensions accepted by Sass step. |
 | `build.sass.style` | `string` | `'expanded'` | Sass output style passed to compiler. |
 | `build.sass.sourceMap` | `boolean` | `false` | Enables Sass source maps. |
 | `build.sass.loadPaths` | `string[]` | `[]` | Extra Sass import lookup folders. |
 | `build.js.enabled` | `boolean` | `true` | Enables JS/TS build step. |
 | `build.js.srcDir` | `string` | `'js/dev'` | Input directory for JS/TS sources. |
-| `build.js.outDir` | `string` | `'js'` | Output directory for compiled JS files. |
+| `build.js.outDir` | `string` | `'js/public'` | Output directory for compiled JS files. |
 | `build.js.extensions` | `string[]` | `['.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx']` | Source extensions accepted by JS step. |
 | `build.js.bundle` | `boolean` | `false` | Enables esbuild bundling mode. |
 | `build.js.minify` | `boolean` | `false` | Enables esbuild minification. |

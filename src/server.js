@@ -21,7 +21,6 @@ const {
 const INTERNAL_MANIFEST_ROUTE = '/magic-file-code-injector.manifest.json';
 const INTERNAL_PROJECT_NAME = 'magic-file-code-injector';
 const INTERNAL_LOG_PREFIX = '[mfci]';
-const DEFAULT_IGNORED_DIRS = ['dev'];
 const REFRESH_BATCH_WINDOW_MS = 150;
 
 const MIME_TYPES = {
@@ -37,7 +36,7 @@ const MIME_TYPES = {
  * Normalize one file definition into a safe runtime descriptor used by HTTP serving and manifest generation.
  * @param {any} definition - Normalized or raw file definition describing exposed source files.
  * @param {any} cwd - Working directory used to resolve relative paths.
- * @returns {object} Runtime-safe file definition with resolved paths and ignore rules.
+ * @returns {object} Runtime-safe file definition with resolved paths.
  */
 function normalizeFileDefinition(definition, cwd) {
     const source = definition || {};
@@ -55,16 +54,7 @@ function normalizeFileDefinition(definition, cwd) {
         Array.isArray(source.extensions) && source.extensions.length > 0 ?
             source.extensions
         :   defaultExtensionsForType(type);
-    const ignoreDirs =
-        Array.isArray(source.ignoreDirs) && source.ignoreDirs.length > 0 ?
-            source.ignoreDirs
-        :   DEFAULT_IGNORED_DIRS;
     const fsRoot = path.resolve(cwd, dir);
-    // Ignore paths are resolved from the exposed root so callers can pass short folder names (for example "dev").
-    const ignoredRoots = ignoreDirs
-        .map((directory) => String(directory || '').trim())
-        .filter(Boolean)
-        .map((directory) => path.resolve(fsRoot, directory));
 
     return {
         type,
@@ -81,7 +71,6 @@ function normalizeFileDefinition(definition, cwd) {
                 .filter(Boolean)
                 .map((extension) => (extension.startsWith('.') ? extension : `.${extension}`))
         ),
-        ignoredRoots,
     };
 }
 
@@ -168,16 +157,6 @@ function collectWatchedExtensions(config, buildConfig) {
     }
 
     return Array.from(extensions).filter(Boolean);
-}
-
-/**
- * Check whether a file path belongs to ignored source folders that must not be exposed.
- * @param {any} definition - Normalized or raw file definition describing exposed source files.
- * @param {any} absolutePath - Absolute filesystem path of the current file candidate.
- * @returns {boolean} True when path is under an ignored directory.
- */
-function isIgnoredPath(definition, absolutePath) {
-    return definition.ignoredRoots.some((ignoredRoot) => isPathInsideOrSame(ignoredRoot, absolutePath));
 }
 
 /**
@@ -307,10 +286,6 @@ function toLiveReloadPath(config, filePath) {
             continue;
         }
 
-        if (isIgnoredPath(definition, absolutePath)) {
-            continue;
-        }
-
         return toUrlPath(absolutePath, definition);
     }
 
@@ -383,10 +358,6 @@ function buildDescriptor(definition, absolutePath) {
     }
 
     if (!isPathInside(definition.fsRoot, normalizedPath)) {
-        return null;
-    }
-
-    if (isIgnoredPath(definition, normalizedPath)) {
         return null;
     }
 
@@ -505,12 +476,6 @@ function createHttpServer(config) {
             // Path traversal guard: block requests escaping the configured root.
             if (!isPathInside(definition.fsRoot, absolutePath)) {
                 writeText(res, 400, 'Invalid path.');
-                return;
-            }
-
-            // Source folders (like css/dev, js/dev) are intentionally not exposed to the extension.
-            if (isIgnoredPath(definition, absolutePath)) {
-                writeText(res, 404, 'Not Found');
                 return;
             }
 

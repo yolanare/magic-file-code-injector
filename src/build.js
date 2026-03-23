@@ -111,15 +111,14 @@ function normalizeJsConfig(source, cwd) {
  * Normalize optional HTML export settings used to generate embeddable style/script wrappers.
  * @param {any} source - Raw `build.exportHtml` section from config.
  * @param {any} defaults - Default `build.exportHtml` section from template.
- * @param {any} cwd - Working directory used to resolve relative paths.
- * @returns {{css:boolean,js:boolean,outDir:string}} Normalized HTML export settings.
+ * @returns {{css:boolean,js:boolean,dirName:string}} Normalized HTML export settings.
  */
-function normalizeExportHtmlConfig(source, defaults, cwd) {
+function normalizeExportHtmlConfig(source, defaults) {
   const input = source || {};
   return {
     css: normalizeBoolean(input.css, defaults.css),
     js: normalizeBoolean(input.js, defaults.js),
-    outDir: normalizeDirectory(cwd, input.outDir, defaults.outDir),
+    dirName: isNonEmptyString(input.dirName) ? input.dirName.trim() : defaults.dirName,
   };
 }
 
@@ -174,7 +173,7 @@ function normalizeBuildConfig(inputConfig = {}, options = {}) {
     // Build log prefix is internal by design so the public config stays focused on build behavior only.
     logPrefix: DEFAULT_BUILD_LOG_PREFIX,
     clean: normalizeBoolean(source.clean, defaults.clean),
-    exportHtml: normalizeExportHtmlConfig(source.exportHtml, defaults.exportHtml, cwd),
+    exportHtml: normalizeExportHtmlConfig(source.exportHtml, defaults.exportHtml),
     sass: normalizeSassConfig(source.sass, cwd),
     js: normalizeJsConfig(source.js, cwd),
     copy: normalizeCopyTasks(source.copy, cwd),
@@ -310,17 +309,17 @@ function stripLeadingCssCharset(cssText) {
 }
 
 /**
- * Resolve the HTML export target path under the configured root using one subfolder per output type.
+ * Resolve the HTML export target path beside each language output root (`css/html`, `js/html` by default).
  * @param {string} outputFile - Built output file (css/js).
  * @param {string} sourceOutDir - Build output directory that produced the file.
- * @param {string} exportOutDir - Root export HTML directory.
+ * @param {string} exportDirName - Per-language HTML folder name under source outDir parent.
  * @returns {string} Absolute HTML export path.
  */
-function resolveHtmlExportPath(outputFile, sourceOutDir, exportOutDir) {
+function resolveHtmlExportPath(outputFile, sourceOutDir, exportDirName) {
   const relativePath = path.relative(sourceOutDir, outputFile);
   const htmlRelativePath = replaceExtension(relativePath, ".html");
-  const typeFolder = path.basename(sourceOutDir);
-  return path.resolve(exportOutDir, typeFolder, htmlRelativePath);
+  const languageRootDir = path.dirname(sourceOutDir);
+  return path.resolve(languageRootDir, exportDirName, htmlRelativePath);
 }
 
 /**
@@ -355,7 +354,7 @@ async function exportCssAsHtml(config, sassConfig, outputFile, cssText) {
     return 0;
   }
 
-  const htmlFile = resolveHtmlExportPath(outputFile, sassConfig.outDir, config.exportHtml.outDir);
+  const htmlFile = resolveHtmlExportPath(outputFile, sassConfig.outDir, config.exportHtml.dirName);
   const htmlText = `<style>\n${cssText}\n</style>\n`;
   await ensureParentDirectory(htmlFile);
   await fsPromises.writeFile(htmlFile, htmlText, "utf8");
@@ -376,7 +375,7 @@ async function exportJsAsHtml(config, jsConfig, outputFile) {
   }
 
   const jsText = await fsPromises.readFile(outputFile, "utf8");
-  const htmlFile = resolveHtmlExportPath(outputFile, jsConfig.outDir, config.exportHtml.outDir);
+  const htmlFile = resolveHtmlExportPath(outputFile, jsConfig.outDir, config.exportHtml.dirName);
   const needsModuleType = shouldUseModuleScriptTag(outputFile);
   const scriptTag = needsModuleType ? '<script type="module">' : "<script>";
   const htmlText = `${scriptTag}\n${escapeInlineScriptContent(jsText)}\n</script>\n`;
@@ -518,8 +517,11 @@ async function cleanOutputDirectories(config) {
   }
 
   const outputDirs = new Set([config.sass.outDir, config.js.outDir, ...config.copy.map((task) => task.to)]);
-  if (config.exportHtml.css || config.exportHtml.js) {
-    outputDirs.add(config.exportHtml.outDir);
+  if (config.exportHtml.css) {
+    outputDirs.add(path.resolve(path.dirname(config.sass.outDir), config.exportHtml.dirName));
+  }
+  if (config.exportHtml.js) {
+    outputDirs.add(path.resolve(path.dirname(config.js.outDir), config.exportHtml.dirName));
   }
 
   for (const outputDir of outputDirs) {

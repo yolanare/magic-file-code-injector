@@ -7,17 +7,15 @@ module.exports = {
     files: [
         {
             type: 'css',
-            dir: 'css',
+            dir: 'css/public',
             urlPrefix: '/css',
             extensions: ['.css'],
-            ignoreDirs: ['dev'],
         },
         {
             type: 'js',
-            dir: 'js',
+            dir: 'js/public',
             urlPrefix: '/js',
             extensions: ['.js', '.mjs'],
-            ignoreDirs: ['dev'],
         },
     ],
     watch: ['css', 'js'],
@@ -26,12 +24,12 @@ module.exports = {
         exportHtml: {
             css: false,
             js: false,
-            outDir: 'dist',
+            dirName: 'html',
         },
         sass: {
             enabled: true,
             srcDir: 'css/dev',
-            outDir: 'css',
+            outDir: 'css/public',
             extensions: ['.scss', '.sass', '.css'],
             style: 'expanded',
             sourceMap: false,
@@ -40,7 +38,7 @@ module.exports = {
         js: {
             enabled: true,
             srcDir: 'js/dev',
-            outDir: 'js',
+            outDir: 'js/public',
             extensions: ['.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx'],
             bundle: false,
             minify: false,
