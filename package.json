@@ -1,7 +1,7 @@
 {
     "name": "@mfci/dev-server",
-    "version": "0.1.0",
-    "description": "Local manifest + LiveReload server for magic-file-code-injector workflows.",
+    "version": "0.2.0",
+    "description": "LiveReload server for magic-file-code-injector workflows.",
     "type": "commonjs",
     "main": "src/server.js",
     "bin": {

@@ -7,7 +7,6 @@ const { normalizeBuildConfig, runBuild, exportOutputFileAsHtml } = require('./bu
 const { formatLogLine, formatPath, supportsColor } = require('./log-format');
 const DEFAULT_TEMPLATE = require('./mfci.config.cjs');
 const {
-    ensureLeadingSlash,
     normalizePort,
     normalizeType,
     defaultExtensionsForType,
@@ -41,24 +40,27 @@ const MIME_TYPES = {
 function normalizeFileDefinition(definition, cwd) {
     const source = definition || {};
     const type = normalizeType(source.type);
-    const dir =
-        typeof source.dir === 'string' && source.dir.trim().length > 0 ? source.dir.trim()
+    const rootDir =
+        typeof source.rootDir === 'string' && source.rootDir.trim().length > 0 ? source.rootDir.trim()
         : type === 'js' ? 'js'
         : 'css';
-    const urlPrefix = ensureLeadingSlash(
-        typeof source.urlPrefix === 'string' && source.urlPrefix.trim().length > 0 ?
-            source.urlPrefix.trim()
-        :   defaultUrlPrefixForType(type)
-    );
+    const publicDir =
+        typeof source.publicDir === 'string' && source.publicDir.trim().length > 0 ?
+            source.publicDir.trim()
+        :   path.join(rootDir, 'public');
+    const urlPrefix = defaultUrlPrefixForType(type);
     const extensions =
         Array.isArray(source.extensions) && source.extensions.length > 0 ?
             source.extensions
         :   defaultExtensionsForType(type);
-    const fsRoot = path.resolve(cwd, dir);
+    const fsRoot = path.resolve(cwd, publicDir);
+    const watchRoot = path.resolve(cwd, rootDir);
 
     return {
         type,
-        dir,
+        rootDir,
+        publicDir,
+        watchRoot,
         fsRoot,
         urlPrefix,
         extensions: new Set(
@@ -100,11 +102,7 @@ function normalizeConfig(inputConfig = {}, options = {}) {
     const fileDefinitionsInput = Array.isArray(source.files) && source.files.length > 0 ? source.files : defaults.files;
     const fileDefinitions = fileDefinitionsInput.map((definition) => normalizeFileDefinition(definition, cwd));
 
-    const watchDefinitionsInput = Array.isArray(source.watch) && source.watch.length > 0 ? source.watch : defaults.watch;
-    const watchDirs = watchDefinitionsInput
-        .map((directory) => String(directory || '').trim())
-        .filter(Boolean)
-        .map((directory) => path.resolve(cwd, directory))
+    const watchDirs = Array.from(new Set(fileDefinitions.map((definition) => definition.watchRoot)))
         .filter((directory) => fs.existsSync(directory));
 
     return {
@@ -193,6 +191,21 @@ function isBuildOutputPath(filePath, buildConfig) {
         isPathInsideOrSame(buildConfig.sass.outDir, absolutePath) ||
         isPathInsideOrSame(buildConfig.js.outDir, absolutePath)
     );
+}
+
+/**
+ * Check whether a changed path belongs to one configured public directory exposed to the extension.
+ * @param {any} filePath - Filesystem path or changed path used by the current operation.
+ * @param {any} config - Normalized runtime configuration for the current subsystem.
+ * @returns {boolean} True when path is inside one configured `files[].publicDir`.
+ */
+function isConfiguredPublicPath(filePath, config) {
+    if (typeof filePath !== 'string' || filePath.length === 0) {
+        return false;
+    }
+
+    const absolutePath = path.resolve(filePath);
+    return config.fileDefinitions.some((definition) => isPathInsideOrSame(definition.fsRoot, absolutePath));
 }
 
 /**
@@ -520,7 +533,7 @@ function startDevServer(inputConfig = {}, options = {}) {
 
     if (config.watchDirs.length === 0) {
         throw new Error(
-            `${config.logPrefix} No watch directory found. Configure "watch" or create the expected directories.`
+            `${config.logPrefix} No watch directory found. Configure "files[].rootDir" or create the expected directories.`
         );
     }
 
@@ -733,7 +746,7 @@ function startDevServer(inputConfig = {}, options = {}) {
         }
 
         // Log refresh actions in terminal so developers can correlate file updates with browser behavior.
-        if (isBuildOutputPath(filePath, buildConfig)) {
+        if (isBuildOutputPath(filePath, buildConfig) || isConfiguredPublicPath(filePath, config)) {
             queueOutputRefresh(filePath);
             return;
         }
@@ -790,7 +803,6 @@ module.exports = {
     DEFAULT_HOST: DEFAULT_TEMPLATE.host,
     DEFAULT_PORT: DEFAULT_TEMPLATE.port,
     DEFAULT_FILE_DEFINITIONS: DEFAULT_TEMPLATE.files,
-    DEFAULT_WATCH_DIRS: DEFAULT_TEMPLATE.watch,
     normalizeConfig,
     startDevServer,
 };

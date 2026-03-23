@@ -111,14 +111,15 @@ function normalizeJsConfig(source, cwd) {
  * Normalize optional HTML export settings used to generate embeddable style/script wrappers.
  * @param {any} source - Raw `build.exportHtml` section from config.
  * @param {any} defaults - Default `build.exportHtml` section from template.
- * @returns {{css:boolean,js:boolean,dirName:string}} Normalized HTML export settings.
+ * @returns {{css:boolean,js:boolean,srcDir:string,outDir:string}} Normalized HTML export settings.
  */
 function normalizeExportHtmlConfig(source, defaults) {
   const input = source || {};
   return {
     css: normalizeBoolean(input.css, defaults.css),
     js: normalizeBoolean(input.js, defaults.js),
-    dirName: isNonEmptyString(input.dirName) ? input.dirName.trim() : defaults.dirName,
+    srcDir: isNonEmptyString(input.srcDir) ? input.srcDir.trim() : defaults.srcDir,
+    outDir: isNonEmptyString(input.outDir) ? input.outDir.trim() : defaults.outDir,
   };
 }
 
@@ -309,17 +310,54 @@ function stripLeadingCssCharset(cssText) {
 }
 
 /**
- * Resolve the HTML export target path beside each language output root (`css/html`, `js/html` by default).
- * @param {string} outputFile - Built output file (css/js).
- * @param {string} sourceOutDir - Build output directory that produced the file.
- * @param {string} exportDirName - Per-language HTML folder name under source outDir parent.
+ * Resolve the language root from a path expected inside one configured HTML-export source subtree.
+ * @param {string} sourcePath - Path expected under one language root export source subtree.
+ * @param {string} exportSrcDir - Source folder name used by HTML export.
+ * @returns {string} Absolute language root directory (`.../css` or `.../js`).
+ */
+function resolveLanguageRootDir(sourcePath, exportSrcDir) {
+  let currentDir = path.resolve(sourcePath);
+
+  while (path.basename(currentDir) !== exportSrcDir) {
+    const parentDir = path.dirname(currentDir);
+    if (parentDir === currentDir) {
+      throw new Error(`Path must be inside the configured exportHtml.srcDir "${exportSrcDir}": ${sourcePath}`);
+    }
+    currentDir = parentDir;
+  }
+
+  return path.dirname(currentDir);
+}
+
+/**
+ * Resolve HTML export source/output roots for one language from runtime config.
+ * @param {string} languageReferencePath - Any path under one language root (typically build outDir).
+ * @param {{srcDir:string,outDir:string}} exportHtmlConfig - Normalized HTML export config.
+ * @returns {{srcRootDir:string,outRootDir:string}} Absolute source and output roots.
+ */
+function resolveHtmlRoots(languageReferencePath, exportHtmlConfig) {
+  const languageRootDir = resolveLanguageRootDir(languageReferencePath, exportHtmlConfig.srcDir);
+  return {
+    srcRootDir: path.resolve(languageRootDir, exportHtmlConfig.srcDir),
+    outRootDir: path.resolve(languageRootDir, exportHtmlConfig.outDir),
+  };
+}
+
+/**
+ * Resolve one HTML export target path by mirroring structure from export source root.
+ * @param {string} sourceFile - Source file from exportHtml.srcDir subtree.
+ * @param {{srcRootDir:string,outRootDir:string}} roots - Export roots for one language.
  * @returns {string} Absolute HTML export path.
  */
-function resolveHtmlExportPath(outputFile, sourceOutDir, exportDirName) {
-  const relativePath = path.relative(sourceOutDir, outputFile);
+function resolveHtmlExportPath(sourceFile, roots) {
+  const absoluteSourceFile = path.resolve(sourceFile);
+  if (!isPathInsideOrSame(roots.srcRootDir, absoluteSourceFile)) {
+    throw new Error(`HTML export source must be inside ${roots.srcRootDir}: ${sourceFile}`);
+  }
+
+  const relativePath = path.relative(roots.srcRootDir, absoluteSourceFile);
   const htmlRelativePath = replaceExtension(relativePath, ".html");
-  const languageRootDir = path.dirname(sourceOutDir);
-  return path.resolve(languageRootDir, exportDirName, htmlRelativePath);
+  return path.resolve(roots.outRootDir, htmlRelativePath);
 }
 
 /**
@@ -354,7 +392,8 @@ async function exportCssAsHtml(config, sassConfig, outputFile, cssText) {
     return 0;
   }
 
-  const htmlFile = resolveHtmlExportPath(outputFile, sassConfig.outDir, config.exportHtml.dirName);
+  const htmlRoots = resolveHtmlRoots(sassConfig.outDir, config.exportHtml);
+  const htmlFile = resolveHtmlExportPath(outputFile, htmlRoots);
   const htmlText = `<style>\n${cssText}\n</style>\n`;
   await ensureParentDirectory(htmlFile);
   await fsPromises.writeFile(htmlFile, htmlText, "utf8");
@@ -375,7 +414,8 @@ async function exportJsAsHtml(config, jsConfig, outputFile) {
   }
 
   const jsText = await fsPromises.readFile(outputFile, "utf8");
-  const htmlFile = resolveHtmlExportPath(outputFile, jsConfig.outDir, config.exportHtml.dirName);
+  const htmlRoots = resolveHtmlRoots(jsConfig.outDir, config.exportHtml);
+  const htmlFile = resolveHtmlExportPath(outputFile, htmlRoots);
   const needsModuleType = shouldUseModuleScriptTag(outputFile);
   const scriptTag = needsModuleType ? '<script type="module">' : "<script>";
   const htmlText = `${scriptTag}\n${escapeInlineScriptContent(jsText)}\n</script>\n`;
@@ -387,29 +427,23 @@ async function exportJsAsHtml(config, jsConfig, outputFile) {
 }
 
 /**
- * Collect output files eligible for static HTML export from one output directory.
- * @param {any} outputDir - Output directory to scan recursively.
- * @param {any} sourceDir - Source directory that must be excluded from static exports.
+ * Collect source files eligible for HTML export from one source directory.
+ * @param {any} sourceDir - Source directory to scan recursively.
  * @param {Set<string>} supportedExtensions - Extensions allowed for export in this output type.
- * @returns {Promise<string[]>} Absolute output file paths eligible for static export.
+ * @returns {Promise<string[]>} Absolute source file paths eligible for static export.
  */
-async function collectStaticExportCandidates(outputDir, sourceDir, supportedExtensions) {
-  if (!fs.existsSync(outputDir)) {
+async function collectStaticExportCandidates(sourceDir, supportedExtensions) {
+  if (!fs.existsSync(sourceDir)) {
     return [];
   }
 
-  const files = await walkDirectory(outputDir);
+  const files = await walkDirectory(sourceDir);
   const candidates = files.filter((filePath) => {
     const resolvedPath = path.resolve(filePath);
     const extension = path.extname(resolvedPath).toLowerCase();
     if (!supportedExtensions.has(extension)) {
       return false;
     }
-
-    if (isPathInsideOrSame(sourceDir, resolvedPath)) {
-      return false;
-    }
-
     return true;
   });
 
@@ -418,8 +452,7 @@ async function collectStaticExportCandidates(outputDir, sourceDir, supportedExte
 }
 
 /**
- * Export HTML wrappers for static files already present in css/js output folders.
- * Files under source folders (`css/dev`, `js/dev`) are intentionally excluded.
+ * Export HTML wrappers for files found under configured export source trees.
  * @param {any} config - Normalized runtime configuration for the current subsystem.
  * @returns {Promise<number>} Number of static HTML files exported.
  */
@@ -427,9 +460,9 @@ async function runStaticHtmlExports(config) {
   let exportedCount = 0;
 
   if (config.exportHtml.css) {
+    const cssRoots = resolveHtmlRoots(config.sass.outDir, config.exportHtml);
     const cssCandidates = await collectStaticExportCandidates(
-      config.sass.outDir,
-      config.sass.srcDir,
+      cssRoots.srcRootDir,
       new Set([".css"])
     );
 
@@ -440,9 +473,9 @@ async function runStaticHtmlExports(config) {
   }
 
   if (config.exportHtml.js) {
+    const jsRoots = resolveHtmlRoots(config.js.outDir, config.exportHtml);
     const jsCandidates = await collectStaticExportCandidates(
-      config.js.outDir,
-      config.js.srcDir,
+      jsRoots.srcRootDir,
       new Set([".js", ".mjs"])
     );
 
@@ -473,8 +506,7 @@ async function exportOutputFileAsHtml(inputConfig = {}, outputFilePath, options 
   if (
     config.exportHtml.css &&
     extension === ".css" &&
-    isPathInsideOrSame(config.sass.outDir, absolutePath) &&
-    !isPathInsideOrSame(config.sass.srcDir, absolutePath)
+    isPathInsideOrSame(resolveHtmlRoots(config.sass.outDir, config.exportHtml).srcRootDir, absolutePath)
   ) {
     const cssText = await fsPromises.readFile(absolutePath, "utf8");
     return exportCssAsHtml(config, config.sass, absolutePath, cssText);
@@ -483,8 +515,7 @@ async function exportOutputFileAsHtml(inputConfig = {}, outputFilePath, options 
   if (
     config.exportHtml.js &&
     (extension === ".js" || extension === ".mjs") &&
-    isPathInsideOrSame(config.js.outDir, absolutePath) &&
-    !isPathInsideOrSame(config.js.srcDir, absolutePath)
+    isPathInsideOrSame(resolveHtmlRoots(config.js.outDir, config.exportHtml).srcRootDir, absolutePath)
   ) {
     return exportJsAsHtml(config, config.js, absolutePath);
   }
@@ -518,10 +549,10 @@ async function cleanOutputDirectories(config) {
 
   const outputDirs = new Set([config.sass.outDir, config.js.outDir, ...config.copy.map((task) => task.to)]);
   if (config.exportHtml.css) {
-    outputDirs.add(path.resolve(path.dirname(config.sass.outDir), config.exportHtml.dirName));
+    outputDirs.add(resolveHtmlRoots(config.sass.outDir, config.exportHtml).outRootDir);
   }
   if (config.exportHtml.js) {
-    outputDirs.add(path.resolve(path.dirname(config.js.outDir), config.exportHtml.dirName));
+    outputDirs.add(resolveHtmlRoots(config.js.outDir, config.exportHtml).outRootDir);
   }
 
   for (const outputDir of outputDirs) {

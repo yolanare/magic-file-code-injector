@@ -7,29 +7,29 @@ module.exports = {
     files: [
         {
             type: 'css',
-            dir: 'css/public',
-            urlPrefix: '/css',
+            rootDir: 'css',
+            publicDir: 'css/public',
             extensions: ['.css'],
         },
         {
             type: 'js',
-            dir: 'js/public',
-            urlPrefix: '/js',
+            rootDir: 'js',
+            publicDir: 'js/public',
             extensions: ['.js', '.mjs'],
         },
     ],
-    watch: ['css', 'js'],
     build: {
         clean: false,
         exportHtml: {
             css: false,
             js: false,
-            dirName: 'html',
+            srcDir: 'public',
+            outDir: 'html',
         },
         sass: {
             enabled: true,
             srcDir: 'css/dev',
-            outDir: 'css/public',
+            outDir: 'css/public/build',
             extensions: ['.scss', '.sass', '.css'],
             style: 'expanded',
             sourceMap: false,
@@ -38,7 +38,7 @@ module.exports = {
         js: {
             enabled: true,
             srcDir: 'js/dev',
-            outDir: 'js/public',
+            outDir: 'js/public/build',
             extensions: ['.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx'],
             bundle: false,
             minify: false,
