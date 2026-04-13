@@ -50,6 +50,7 @@ npm run build
 - JS/TS input: `js/dev`
 - JS output: `js/public/build`
 - HTML export output (when enabled): `css/html` and `js/html`
+- Merged HTML export output (when enabled and matching names exist): `html-merge`
 - `css/dev` and `js/dev` are optional: if present, files are built to `public/build`; if missing, build is skipped for that type.
 - files already in `css/public/*` and `js/public/*` are not transformed by `mfci-build`; they are served as-is.
 
@@ -97,6 +98,7 @@ Each entry describes one file group exposed in the extension manifest (CSS or JS
 Unified build section:
 
 - `build.exportHtml` generates `.html` files into language folders (`css/html`, `js/html` by default).
+- `build.exportHtml.mergeSameName` can also generate merged `.html` files in one root-level folder (`html-merge` by default) when CSS and JS exports share the same relative HTML name.
 - `build.sass` compiles `css/dev` into `css/public/build`.
 - `build.js` compiles `js/dev` into `js/public/build`.
 - `build.copy` runs additional directory copy tasks after compilation.
@@ -109,6 +111,8 @@ Unified build section:
 | `build.exportHtml.js` | `boolean` | `false` | When `true`, exports JS as `.html` with `<script>...</script>`. |
 | `build.exportHtml.srcDir` | `string` | `'public'` | Source folder (under each language root) scanned to generate HTML exports. |
 | `build.exportHtml.outDir` | `string` | `'html'` | Output folder (under each language root) receiving mirrored HTML exports. |
+| `build.exportHtml.mergeSameName` | `boolean` | `true` | When `true`, merges matching CSS+JS exported HTML names into one file. |
+| `build.exportHtml.mergeSameNameDir` | `string` | `'html-merge'` | Root-relative output directory used for merged CSS+JS HTML files. |
 | `build.sass.enabled` | `boolean` | `true` | Enables Sass/CSS build step. |
 | `build.sass.srcDir` | `string` | `'css/dev'` | Input directory for Sass/CSS sources. |
 | `build.sass.outDir` | `string` | `'css/public/build'` | Output directory for compiled CSS files. |

@@ -111,7 +111,7 @@ function normalizeJsConfig(source, cwd) {
  * Normalize optional HTML export settings used to generate embeddable style/script wrappers.
  * @param {any} source - Raw `build.exportHtml` section from config.
  * @param {any} defaults - Default `build.exportHtml` section from template.
- * @returns {{css:boolean,js:boolean,srcDir:string,outDir:string}} Normalized HTML export settings.
+ * @returns {{css:boolean,js:boolean,srcDir:string,outDir:string,mergeSameName:boolean,mergeSameNameDir:string}} Normalized HTML export settings.
  */
 function normalizeExportHtmlConfig(source, defaults) {
   const input = source || {};
@@ -120,6 +120,9 @@ function normalizeExportHtmlConfig(source, defaults) {
     js: normalizeBoolean(input.js, defaults.js),
     srcDir: isNonEmptyString(input.srcDir) ? input.srcDir.trim() : defaults.srcDir,
     outDir: isNonEmptyString(input.outDir) ? input.outDir.trim() : defaults.outDir,
+    mergeSameName: normalizeBoolean(input.mergeSameName, defaults.mergeSameName),
+    mergeSameNameDir:
+      isNonEmptyString(input.mergeSameNameDir) ? input.mergeSameNameDir.trim() : defaults.mergeSameNameDir,
   };
 }
 
@@ -361,6 +364,122 @@ function resolveHtmlExportPath(sourceFile, roots) {
 }
 
 /**
+ * Resolve the root directory receiving merged HTML snippets (`css + js`) for matching exported names.
+ * @param {any} config - Normalized runtime configuration for the current subsystem.
+ * @returns {string} Absolute merge output root.
+ */
+function resolveMergeSameNameRootDir(config) {
+  return path.resolve(config.cwd, config.exportHtml.mergeSameNameDir);
+}
+
+/**
+ * Build one stable HTML key from an exported HTML file so css/js outputs can be matched reliably.
+ * @param {string} rootDir - HTML export root directory (`css/html` or `js/html`).
+ * @param {string} htmlFile - Exported HTML file path inside `rootDir`.
+ * @returns {string} Relative key used to match same-name css/js exports.
+ */
+function resolveHtmlMergeKey(rootDir, htmlFile) {
+  return withPosixSeparators(path.relative(rootDir, htmlFile));
+}
+
+/**
+ * Collect exported HTML files as a map keyed by their relative HTML path.
+ * @param {string} htmlRootDir - One language HTML export root directory.
+ * @returns {Promise<Map<string,string>>} Map of `relativeHtmlPath -> absoluteHtmlPath`.
+ */
+async function collectExportedHtmlByKey(htmlRootDir) {
+  const htmlMap = new Map();
+
+  if (!fs.existsSync(htmlRootDir)) {
+    return htmlMap;
+  }
+
+  const files = await walkDirectory(htmlRootDir);
+  for (const filePath of files) {
+    const absolutePath = path.resolve(filePath);
+    if (path.extname(absolutePath).toLowerCase() !== ".html") {
+      continue;
+    }
+
+    htmlMap.set(resolveHtmlMergeKey(htmlRootDir, absolutePath), absolutePath);
+  }
+
+  return htmlMap;
+}
+
+/**
+ * Concatenate one CSS HTML snippet and one JS HTML snippet in a deterministic order.
+ * @param {string} cssHtmlText - HTML snippet generated from CSS.
+ * @param {string} jsHtmlText - HTML snippet generated from JS.
+ * @returns {string} Merged HTML snippet.
+ */
+function mergeCssAndJsHtml(cssHtmlText, jsHtmlText) {
+  const left = String(cssHtmlText || "").trimEnd();
+  const right = String(jsHtmlText || "").trimStart();
+  return `${left}\n${right}\n`;
+}
+
+/**
+ * Merge matching css/js HTML exports into one root-level folder when `mergeSameName` is enabled.
+ * @param {any} config - Normalized runtime configuration for the current subsystem.
+ * @param {string} onlyMergeKey - Optional single key to merge (used for per-file dev updates).
+ * @returns {Promise<number>} Number of merged HTML files written.
+ */
+async function runMergeSameNameHtmlExports(config, onlyMergeKey = "") {
+  if (!config.exportHtml.mergeSameName || !config.exportHtml.css || !config.exportHtml.js) {
+    return 0;
+  }
+
+  const cssHtmlRoot = resolveHtmlRoots(config.sass.outDir, config.exportHtml).outRootDir;
+  const jsHtmlRoot = resolveHtmlRoots(config.js.outDir, config.exportHtml).outRootDir;
+  const mergeRoot = resolveMergeSameNameRootDir(config);
+
+  const cssByKey = await collectExportedHtmlByKey(cssHtmlRoot);
+  const jsByKey = await collectExportedHtmlByKey(jsHtmlRoot);
+
+  const keys =
+    isNonEmptyString(onlyMergeKey) ?
+      [onlyMergeKey]
+    : Array.from(cssByKey.keys())
+        .filter((key) => jsByKey.has(key))
+        .sort();
+
+  if (!isNonEmptyString(onlyMergeKey)) {
+    await fsPromises.rm(mergeRoot, { recursive: true, force: true });
+  }
+
+  let mergedCount = 0;
+
+  for (const key of keys) {
+    const cssHtmlFile = cssByKey.get(key);
+    const jsHtmlFile = jsByKey.get(key);
+    const mergedHtmlFile = path.resolve(mergeRoot, key);
+
+    if (!cssHtmlFile || !jsHtmlFile) {
+      // When one side disappears after an update, remove stale merged output for that key.
+      await fsPromises.rm(mergedHtmlFile, { force: true });
+      continue;
+    }
+
+    const cssHtmlText = await fsPromises.readFile(cssHtmlFile, "utf8");
+    const jsHtmlText = await fsPromises.readFile(jsHtmlFile, "utf8");
+    const mergedHtmlText = mergeCssAndJsHtml(cssHtmlText, jsHtmlText);
+
+    await ensureParentDirectory(mergedHtmlFile);
+    await fsPromises.writeFile(mergedHtmlFile, mergedHtmlText, "utf8");
+    logBuild(
+      config,
+      "success",
+      `HTML merged: ${displayPath(config, cssHtmlFile)} + ${displayPath(config, jsHtmlFile)} -> ${displayPath(config, mergedHtmlFile)}`
+    );
+
+    mergedCount += 1;
+  }
+
+  return mergedCount;
+}
+
+/**
  * Escape inline script content so embedded `</script>` sequences do not break generated HTML wrappers.
  * @param {string} sourceText - JavaScript source to embed inline.
  * @returns {string} Safe inline script content.
@@ -508,8 +627,13 @@ async function exportOutputFileAsHtml(inputConfig = {}, outputFilePath, options 
     extension === ".css" &&
     isPathInsideOrSame(resolveHtmlRoots(config.sass.outDir, config.exportHtml).srcRootDir, absolutePath)
   ) {
+    const cssHtmlRoots = resolveHtmlRoots(config.sass.outDir, config.exportHtml);
     const cssText = await fsPromises.readFile(absolutePath, "utf8");
-    return exportCssAsHtml(config, config.sass, absolutePath, cssText);
+    const exportedCount = await exportCssAsHtml(config, config.sass, absolutePath, cssText);
+    const htmlFile = resolveHtmlExportPath(absolutePath, cssHtmlRoots);
+    const mergeKey = resolveHtmlMergeKey(cssHtmlRoots.outRootDir, htmlFile);
+    const mergedCount = await runMergeSameNameHtmlExports(config, mergeKey);
+    return exportedCount + mergedCount;
   }
 
   if (
@@ -517,7 +641,12 @@ async function exportOutputFileAsHtml(inputConfig = {}, outputFilePath, options 
     (extension === ".js" || extension === ".mjs") &&
     isPathInsideOrSame(resolveHtmlRoots(config.js.outDir, config.exportHtml).srcRootDir, absolutePath)
   ) {
-    return exportJsAsHtml(config, config.js, absolutePath);
+    const jsHtmlRoots = resolveHtmlRoots(config.js.outDir, config.exportHtml);
+    const exportedCount = await exportJsAsHtml(config, config.js, absolutePath);
+    const htmlFile = resolveHtmlExportPath(absolutePath, jsHtmlRoots);
+    const mergeKey = resolveHtmlMergeKey(jsHtmlRoots.outRootDir, htmlFile);
+    const mergedCount = await runMergeSameNameHtmlExports(config, mergeKey);
+    return exportedCount + mergedCount;
   }
 
   return 0;
@@ -553,6 +682,9 @@ async function cleanOutputDirectories(config) {
   }
   if (config.exportHtml.js) {
     outputDirs.add(resolveHtmlRoots(config.js.outDir, config.exportHtml).outRootDir);
+  }
+  if (config.exportHtml.mergeSameName) {
+    outputDirs.add(resolveMergeSameNameRootDir(config));
   }
 
   for (const outputDir of outputDirs) {
@@ -788,8 +920,9 @@ async function runBuild(inputConfig = {}, options = {}) {
   const jsCount = await runJsBuild(config);
   const copyCount = await runCopyTasks(config);
   const staticHtmlCount = await runStaticHtmlExports(config);
+  const mergedHtmlCount = await runMergeSameNameHtmlExports(config);
 
-  const total = sassCount + jsCount + copyCount + staticHtmlCount;
+  const total = sassCount + jsCount + copyCount + staticHtmlCount + mergedHtmlCount;
   logBuild(config, "success", `Build completed: ${total} file${total > 1 ? "s" : ""}.`);
 
   return {
@@ -799,6 +932,7 @@ async function runBuild(inputConfig = {}, options = {}) {
       js: jsCount,
       copy: copyCount,
       staticHtml: staticHtmlCount,
+      mergedHtml: mergedHtmlCount,
       total,
     },
   };

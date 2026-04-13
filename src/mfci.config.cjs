@@ -25,6 +25,8 @@ module.exports = {
             js: false,
             srcDir: 'public',
             outDir: 'html',
+            mergeSameName: true,
+            mergeSameNameDir: 'html-merge',
         },
         sass: {
             enabled: true,
