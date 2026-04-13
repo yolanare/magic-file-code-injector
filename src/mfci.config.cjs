@@ -6,6 +6,12 @@ module.exports = {
     port: 35888,
     files: [
         {
+            type: 'html',
+            rootDir: 'html',
+            publicDir: 'html/public',
+            extensions: ['.html'],
+        },
+        {
             type: 'css',
             rootDir: 'css',
             publicDir: 'css/public',
@@ -21,6 +27,7 @@ module.exports = {
     build: {
         clean: false,
         exportHtml: {
+            html: false,
             css: false,
             js: false,
             srcDir: 'public',
@@ -28,6 +35,12 @@ module.exports = {
             mergeSameName: true,
             mergeSameNameDir: 'html-merge',
             mergeSameNameIgnorePath: true,
+        },
+        html: {
+            enabled: true,
+            srcDir: 'html/dev',
+            outDir: 'html/public/build',
+            extensions: ['.html'],
         },
         sass: {
             enabled: true,

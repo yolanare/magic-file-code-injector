@@ -23,6 +23,7 @@ const INTERNAL_LOG_PREFIX = '[mfci]';
 const REFRESH_BATCH_WINDOW_MS = 150;
 
 const MIME_TYPES = {
+    '.html': 'text/html; charset=utf-8',
     '.css': 'text/css; charset=utf-8',
     '.js': 'text/javascript; charset=utf-8',
     '.mjs': 'text/javascript; charset=utf-8',
@@ -42,6 +43,7 @@ function normalizeFileDefinition(definition, cwd) {
     const type = normalizeType(source.type);
     const rootDir =
         typeof source.rootDir === 'string' && source.rootDir.trim().length > 0 ? source.rootDir.trim()
+        : type === 'html' ? 'html'
         : type === 'js' ? 'js'
         : 'css';
     const publicDir =
@@ -153,6 +155,9 @@ function collectWatchedExtensions(config, buildConfig) {
     for (const extension of buildConfig.js.extensions) {
         extensions.add(String(extension || '').toLowerCase().replace(/^\./, ''));
     }
+    for (const extension of buildConfig.html.extensions) {
+        extensions.add(String(extension || '').toLowerCase().replace(/^\./, ''));
+    }
 
     return Array.from(extensions).filter(Boolean);
 }
@@ -161,7 +166,7 @@ function collectWatchedExtensions(config, buildConfig) {
  * Check whether a changed file belongs to dev build sources that should trigger recompilation.
  * @param {any} filePath - Filesystem path or changed path used by the current operation.
  * @param {any} buildConfig - Normalized runtime configuration for the current subsystem.
- * @returns {boolean} True when path is inside configured Sass or JS source directories.
+ * @returns {boolean} True when path is inside configured HTML, Sass or JS source directories.
  */
 function isBuildSourcePath(filePath, buildConfig) {
     if (typeof filePath !== 'string' || filePath.length === 0) {
@@ -170,6 +175,7 @@ function isBuildSourcePath(filePath, buildConfig) {
 
     const absolutePath = path.resolve(filePath);
     return (
+        isPathInsideOrSame(buildConfig.html.srcDir, absolutePath) ||
         isPathInsideOrSame(buildConfig.sass.srcDir, absolutePath) ||
         isPathInsideOrSame(buildConfig.js.srcDir, absolutePath)
     );
@@ -179,7 +185,7 @@ function isBuildSourcePath(filePath, buildConfig) {
  * Check whether a changed file belongs to build outputs generated from dev sources.
  * @param {any} filePath - Filesystem path or changed path used by the current operation.
  * @param {any} buildConfig - Normalized runtime configuration for the current subsystem.
- * @returns {boolean} True when path is inside configured Sass or JS output directories.
+ * @returns {boolean} True when path is inside configured HTML, Sass or JS output directories.
  */
 function isBuildOutputPath(filePath, buildConfig) {
     if (typeof filePath !== 'string' || filePath.length === 0) {
@@ -188,6 +194,7 @@ function isBuildOutputPath(filePath, buildConfig) {
 
     const absolutePath = path.resolve(filePath);
     return (
+        isPathInsideOrSame(buildConfig.html.outDir, absolutePath) ||
         isPathInsideOrSame(buildConfig.sass.outDir, absolutePath) ||
         isPathInsideOrSame(buildConfig.js.outDir, absolutePath)
     );
@@ -217,6 +224,7 @@ function isConfiguredPublicPath(filePath, config) {
 function createScopedBuildConfig(buildConfig, sourcePath) {
     const scoped = {
         ...buildConfig,
+        html: { ...buildConfig.html },
         sass: { ...buildConfig.sass },
         js: { ...buildConfig.js },
         copy: Array.isArray(buildConfig.copy) ? buildConfig.copy.map((task) => ({ ...task })) : [],
@@ -227,12 +235,18 @@ function createScopedBuildConfig(buildConfig, sourcePath) {
     }
 
     const absolutePath = path.resolve(sourcePath);
+    const isHtmlSource = isPathInsideOrSame(scoped.html.srcDir, absolutePath);
     const isSassSource = isPathInsideOrSame(scoped.sass.srcDir, absolutePath);
     const isJsSource = isPathInsideOrSame(scoped.js.srcDir, absolutePath);
 
-    if (isSassSource && !isJsSource) {
+    if (isHtmlSource && !isSassSource && !isJsSource) {
+        scoped.sass.enabled = false;
         scoped.js.enabled = false;
-    } else if (isJsSource && !isSassSource) {
+    } else if (isSassSource && !isJsSource && !isHtmlSource) {
+        scoped.html.enabled = false;
+        scoped.js.enabled = false;
+    } else if (isJsSource && !isSassSource && !isHtmlSource) {
+        scoped.html.enabled = false;
         scoped.sass.enabled = false;
     }
 
@@ -579,10 +593,15 @@ function startDevServer(inputConfig = {}, options = {}) {
     /**
      * Log one refresh signal line with type-specific wording.
      * @param {string} filePath - Absolute filesystem path of the refreshed file.
-     * @param {"css"|"js"|"asset"} reloadType - Refresh category derived from output extension.
+     * @param {"html"|"css"|"js"|"asset"} reloadType - Refresh category derived from output extension.
      * @returns {void} Writes one refresh log line.
      */
     function logRefreshSignal(filePath, reloadType) {
+        if (reloadType === 'html') {
+            logRefreshAction('success', `HTML refresh signal sent: ${formatServerPath(config, filePath)}`);
+            return;
+        }
+
         if (reloadType === 'css') {
             logRefreshAction('success', `CSS hot refresh signal sent: ${formatServerPath(config, filePath)}`);
             return;

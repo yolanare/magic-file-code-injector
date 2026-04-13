@@ -1,3 +1,5 @@
+const path = require("node:path");
+
 /**
  * Ensure route-like values always start with "/" so URL matching stays deterministic.
  * @param {any} value - Raw route candidate.
@@ -27,10 +29,16 @@ function normalizePort(value, fallbackPort) {
 /**
  * Collapse file type values to the supported set used by manifest and injection flows.
  * @param {any} typeValue - Candidate file type value.
- * @returns {"css"|"js"} Supported file type key.
+ * @returns {"html"|"css"|"js"} Supported file type key.
  */
 function normalizeType(typeValue) {
-  return typeValue === "js" ? "js" : "css";
+  if (typeValue === "html") {
+    return "html";
+  }
+  if (typeValue === "js") {
+    return "js";
+  }
+  return "css";
 }
 
 /**
@@ -39,7 +47,13 @@ function normalizeType(typeValue) {
  * @returns {string[]} Default extension list.
  */
 function defaultExtensionsForType(typeValue) {
-  return typeValue === "js" ? [".js", ".mjs"] : [".css"];
+  if (typeValue === "html") {
+    return [".html"];
+  }
+  if (typeValue === "js") {
+    return [".js", ".mjs"];
+  }
+  return [".css"];
 }
 
 /**
@@ -48,7 +62,13 @@ function defaultExtensionsForType(typeValue) {
  * @returns {string} Default URL prefix.
  */
 function defaultUrlPrefixForType(typeValue) {
-  return typeValue === "js" ? "/js" : "/css";
+  if (typeValue === "html") {
+    return "/html";
+  }
+  if (typeValue === "js") {
+    return "/js";
+  }
+  return "/css";
 }
 
 /**
@@ -63,10 +83,13 @@ function toForwardSlashes(value) {
 /**
  * Map a changed path to a reload category used for logging and LiveReload signaling.
  * @param {any} filePath - Filesystem path.
- * @returns {"css"|"js"|"asset"} Reload category.
+ * @returns {"html"|"css"|"js"|"asset"} Reload category.
  */
 function inferReloadType(filePath) {
   const extension = path.extname(String(filePath || "")).toLowerCase();
+  if (extension === ".html") {
+    return "html";
+  }
   if (extension === ".css") {
     return "css";
   }
@@ -109,4 +132,3 @@ module.exports = {
   isPathInside,
   isPathInsideOrSame,
 };
-const path = require("node:path");
