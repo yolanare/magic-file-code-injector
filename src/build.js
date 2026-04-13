@@ -111,7 +111,7 @@ function normalizeJsConfig(source, cwd) {
  * Normalize optional HTML export settings used to generate embeddable style/script wrappers.
  * @param {any} source - Raw `build.exportHtml` section from config.
  * @param {any} defaults - Default `build.exportHtml` section from template.
- * @returns {{css:boolean,js:boolean,srcDir:string,outDir:string,mergeSameName:boolean,mergeSameNameDir:string}} Normalized HTML export settings.
+ * @returns {{css:boolean,js:boolean,srcDir:string,outDir:string,mergeSameName:boolean,mergeSameNameDir:string,mergeSameNameIgnorePath:boolean}} Normalized HTML export settings.
  */
 function normalizeExportHtmlConfig(source, defaults) {
   const input = source || {};
@@ -123,6 +123,7 @@ function normalizeExportHtmlConfig(source, defaults) {
     mergeSameName: normalizeBoolean(input.mergeSameName, defaults.mergeSameName),
     mergeSameNameDir:
       isNonEmptyString(input.mergeSameNameDir) ? input.mergeSameNameDir.trim() : defaults.mergeSameNameDir,
+    mergeSameNameIgnorePath: normalizeBoolean(input.mergeSameNameIgnorePath, defaults.mergeSameNameIgnorePath),
   };
 }
 
@@ -376,32 +377,41 @@ function resolveMergeSameNameRootDir(config) {
  * Build one stable HTML key from an exported HTML file so css/js outputs can be matched reliably.
  * @param {string} rootDir - HTML export root directory (`css/html` or `js/html`).
  * @param {string} htmlFile - Exported HTML file path inside `rootDir`.
+ * @param {boolean} ignorePath - When true, match files by basename only (ignores nested folders).
  * @returns {string} Relative key used to match same-name css/js exports.
  */
-function resolveHtmlMergeKey(rootDir, htmlFile) {
+function resolveHtmlMergeKey(rootDir, htmlFile, ignorePath) {
+  if (ignorePath) {
+    return path.basename(htmlFile);
+  }
   return withPosixSeparators(path.relative(rootDir, htmlFile));
 }
 
 /**
  * Collect exported HTML files as a map keyed by their relative HTML path.
  * @param {string} htmlRootDir - One language HTML export root directory.
+ * @param {boolean} ignorePath - When true, index files by basename only.
  * @returns {Promise<Map<string,string>>} Map of `relativeHtmlPath -> absoluteHtmlPath`.
  */
-async function collectExportedHtmlByKey(htmlRootDir) {
+async function collectExportedHtmlByKey(htmlRootDir, ignorePath) {
   const htmlMap = new Map();
 
   if (!fs.existsSync(htmlRootDir)) {
     return htmlMap;
   }
 
-  const files = await walkDirectory(htmlRootDir);
+  const files = (await walkDirectory(htmlRootDir)).sort();
   for (const filePath of files) {
     const absolutePath = path.resolve(filePath);
     if (path.extname(absolutePath).toLowerCase() !== ".html") {
       continue;
     }
 
-    htmlMap.set(resolveHtmlMergeKey(htmlRootDir, absolutePath), absolutePath);
+    const mergeKey = resolveHtmlMergeKey(htmlRootDir, absolutePath, ignorePath);
+    if (!htmlMap.has(mergeKey)) {
+      // Keep the first file for duplicate basenames to preserve deterministic output.
+      htmlMap.set(mergeKey, absolutePath);
+    }
   }
 
   return htmlMap;
@@ -434,8 +444,9 @@ async function runMergeSameNameHtmlExports(config, onlyMergeKey = "") {
   const jsHtmlRoot = resolveHtmlRoots(config.js.outDir, config.exportHtml).outRootDir;
   const mergeRoot = resolveMergeSameNameRootDir(config);
 
-  const cssByKey = await collectExportedHtmlByKey(cssHtmlRoot);
-  const jsByKey = await collectExportedHtmlByKey(jsHtmlRoot);
+  const ignorePath = config.exportHtml.mergeSameNameIgnorePath === true;
+  const cssByKey = await collectExportedHtmlByKey(cssHtmlRoot, ignorePath);
+  const jsByKey = await collectExportedHtmlByKey(jsHtmlRoot, ignorePath);
 
   const keys =
     isNonEmptyString(onlyMergeKey) ?
@@ -631,7 +642,11 @@ async function exportOutputFileAsHtml(inputConfig = {}, outputFilePath, options 
     const cssText = await fsPromises.readFile(absolutePath, "utf8");
     const exportedCount = await exportCssAsHtml(config, config.sass, absolutePath, cssText);
     const htmlFile = resolveHtmlExportPath(absolutePath, cssHtmlRoots);
-    const mergeKey = resolveHtmlMergeKey(cssHtmlRoots.outRootDir, htmlFile);
+    const mergeKey = resolveHtmlMergeKey(
+      cssHtmlRoots.outRootDir,
+      htmlFile,
+      config.exportHtml.mergeSameNameIgnorePath === true
+    );
     const mergedCount = await runMergeSameNameHtmlExports(config, mergeKey);
     return exportedCount + mergedCount;
   }
@@ -644,7 +659,11 @@ async function exportOutputFileAsHtml(inputConfig = {}, outputFilePath, options 
     const jsHtmlRoots = resolveHtmlRoots(config.js.outDir, config.exportHtml);
     const exportedCount = await exportJsAsHtml(config, config.js, absolutePath);
     const htmlFile = resolveHtmlExportPath(absolutePath, jsHtmlRoots);
-    const mergeKey = resolveHtmlMergeKey(jsHtmlRoots.outRootDir, htmlFile);
+    const mergeKey = resolveHtmlMergeKey(
+      jsHtmlRoots.outRootDir,
+      htmlFile,
+      config.exportHtml.mergeSameNameIgnorePath === true
+    );
     const mergedCount = await runMergeSameNameHtmlExports(config, mergeKey);
     return exportedCount + mergedCount;
   }
