@@ -275,13 +275,19 @@ async function fetchFileText(url) {
  */
 async function buildSyncPayload(state, hostKey, hostState, options = {}) {
   const manifest = await fetchManifest(state.global);
+  const injectionEnabled = state.global.injectionEnabled !== false;
 
   // Only ship currently enabled files to content scripts to keep injection minimal.
   const activeManifestFiles = manifest.files.filter((file) => hostState.enabledFileIds.includes(file.id));
   const requestedFileIds = uniqueStrings(Array.isArray(options.fileIds) ? options.fileIds : []);
   const requestedSet = new Set(requestedFileIds);
-  const isPartial = requestedSet.size > 0;
-  const filesToSync = isPartial ? activeManifestFiles.filter((file) => requestedSet.has(file.id)) : activeManifestFiles;
+  const isPartialRequest = requestedSet.size > 0;
+  const isPartial = injectionEnabled ? isPartialRequest : false;
+  const filesToSync =
+    injectionEnabled ?
+      isPartialRequest ? activeManifestFiles.filter((file) => requestedSet.has(file.id))
+      : activeManifestFiles
+    : [];
 
   const files = [];
   for (const file of filesToSync) {
@@ -389,6 +395,21 @@ async function applyToCurrentTab(reason) {
   }
 
   await syncTab(activeTab.id, reason);
+}
+
+/**
+ * Synchronize all regular web tabs to apply global extension state changes immediately.
+ * @param {any} reason - Sync reason used for diagnostics and message tracing.
+ * @returns {Promise<void>} Completes after best-effort sync across all tabs.
+ */
+async function applyToAllTabs(reason) {
+  const tabs = await tabsQuery({ url: ["http://*/*", "https://*/*"] });
+  for (const tab of tabs) {
+    if (typeof tab.id !== "number") {
+      continue;
+    }
+    await syncTab(tab.id, reason);
+  }
 }
 
 /**
@@ -802,6 +823,10 @@ async function flushSocketEventBatch() {
 
   try {
     const state = await loadState();
+    if (state.global.injectionEnabled === false) {
+      return;
+    }
+
     const needManifest = events.some((event) => !event.fileId || event.normalizedChangedPath);
 
     let manifest = null;
@@ -969,6 +994,22 @@ async function updateAutoRefresh(message) {
 }
 
 /**
+ * Persist the global injection toggle and resync all tabs so enable/disable is immediate everywhere.
+ * @param {any} message - Runtime message payload received from UI/content/background.
+ * @returns {Promise<object>} Mutation result for global injection setting.
+ */
+async function updateGlobalInjectionEnabled(message) {
+  const nextValue = message.injectionEnabled === true;
+  const state = await loadState();
+
+  state.global.injectionEnabled = nextValue;
+  await saveState(state);
+
+  await applyToAllTabs(nextValue ? "global-injection-enabled" : "global-injection-disabled");
+  return { ok: true };
+}
+
+/**
  * Update global server port, reconnect socket and resync active tab.
  * @param {any} message - Runtime message payload received from UI/content/background.
  * @returns {Promise<object>} Mutation result for global port setting.
@@ -1065,6 +1106,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return updateHostFileSelection(message);
       case "POPUP_SET_AUTO_REFRESH_JS":
         return updateAutoRefresh(message);
+      case "POPUP_SET_GLOBAL_INJECTION":
+        return updateGlobalInjectionEnabled(message);
       case "POPUP_SET_PORT":
       case "OPTIONS_SET_PORT":
         return updatePort(message);

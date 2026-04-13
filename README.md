@@ -159,6 +159,7 @@ Per-site: active file selection and JS behavior per domain.
 | --- | --- | --- | --- | --- | --- |
 | Global | `global.host` | `string` | `'127.0.0.1'` | Internal default | Host used by extension to connect to MFCI server. |
 | Global | `global.port` | `number` | `35888` | Options page | Port used by extension to connect to MFCI server. |
+| Global | `global.injectionEnabled` | `boolean` | `true` | Popup | Enables/disables all CSS/JS injection globally without changing per-site file selections. |
 | Per-site | `enabledFileIds` | `string[]` | `[]` | Popup | Selected CSS/JS files enabled for this domain. |
 | Per-site | `autoRefreshJs` | `boolean` | `false` | Popup | Enables full page reload when selected JS files change. |
 

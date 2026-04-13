@@ -4,6 +4,7 @@
     global: {
       host: "127.0.0.1",
       port: 35888,
+      injectionEnabled: true,
     },
     hosts: {},
   };
@@ -55,6 +56,8 @@
     const host = typeof globalState.host === "string" && globalState.host.trim().length > 0 ? globalState.host.trim() : DEFAULT_STATE.global.host;
     const parsedPort = Number(globalState.port);
     const port = Number.isInteger(parsedPort) && parsedPort >= 1 && parsedPort <= 65535 ? parsedPort : DEFAULT_STATE.global.port;
+    const injectionEnabled =
+      typeof globalState.injectionEnabled === "boolean" ? globalState.injectionEnabled : DEFAULT_STATE.global.injectionEnabled;
 
     const hosts = {};
     if (source.hosts && typeof source.hosts === "object") {
@@ -64,7 +67,7 @@
     }
 
     return {
-      global: { host, port },
+      global: { host, port, injectionEnabled },
       hosts,
     };
   }

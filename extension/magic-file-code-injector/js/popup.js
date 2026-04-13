@@ -1,6 +1,7 @@
 const hostValueElement = document.getElementById("host-value");
 const serverValueElement = document.getElementById("server-value");
 const statusMessageElement = document.getElementById("status-message");
+const globalInjectionEnabledElement = document.getElementById("global-injection-enabled");
 const autoRefreshJsElement = document.getElementById("auto-refresh-js");
 const pendingJsElement = document.getElementById("pending-js");
 const filesListElement = document.getElementById("files-list");
@@ -148,6 +149,7 @@ function render() {
 
   hostValueElement.textContent = model.hostKey || "No active web page";
   serverValueElement.textContent = model.server.origin;
+  globalInjectionEnabledElement.checked = model.global.injectionEnabled !== false;
 
   const serverProblems = [];
   if (model.server.error) {
@@ -159,6 +161,8 @@ function render() {
 
   if (serverProblems.length > 0) {
     setStatus(serverProblems.join(" "), true);
+  } else if (model.global.injectionEnabled === false) {
+    setStatus("Injection disabled globally.", false);
   } else if (model.server.websocketConnected) {
     setStatus("Connected to local server.", false);
   } else {
@@ -237,6 +241,15 @@ autoRefreshJsElement.addEventListener("change", async () => {
     type: "POPUP_SET_AUTO_REFRESH_JS",
     hostKey: model.hostKey,
     autoRefreshJs: autoRefreshJsElement.checked,
+  });
+
+  await refreshModel();
+});
+
+globalInjectionEnabledElement.addEventListener("change", async () => {
+  await sendRuntimeMessage({
+    type: "POPUP_SET_GLOBAL_INJECTION",
+    injectionEnabled: globalInjectionEnabledElement.checked,
   });
 
   await refreshModel();
