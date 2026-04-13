@@ -620,8 +620,10 @@ async function connectSocket(options = {}) {
     stopReconnectLoop();
     connectionLossLogged = false;
 
-    // Always log successful connection establishment for developer visibility.
-    logToBrowserConsole("log", "[mfci] WebSocket connection established.");
+    // Startup reconnects can happen after service-worker wakeups (sleep/resume); avoid noisy duplicate tab logs.
+    if (reason !== "startup") {
+      logToBrowserConsole("log", "[mfci] WebSocket connection established.");
+    }
 
     try {
       // LiveReload handshake: required so the server starts sending reload notifications.
