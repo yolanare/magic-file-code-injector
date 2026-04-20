@@ -1,12 +1,12 @@
-const { runBuild } = require("./build");
-const { DEFAULT_CONFIG_FILE, loadRuntimeConfig, resolveBuildConfig } = require("./config-loader");
+const { runBuild } = require('./build');
+const { DEFAULT_CONFIG_FILE, loadRuntimeConfig, resolveBuildConfig } = require('./config-loader');
 
 /**
  * Print CLI usage details so commands remain discoverable without external documentation.
  * @returns {void} Prints usage information to stdout.
  */
 function printHelp() {
-  console.log(`mfci-build
+    console.log(`mfci-build
 
 Usage:
   mfci-build
@@ -25,33 +25,33 @@ Options:
  * @returns {object} Parsed command-line options.
  */
 function parseArgs(argv) {
-  const parsed = {
-    configPath: DEFAULT_CONFIG_FILE,
-    clean: false,
-    help: false,
-  };
+    const parsed = {
+        configPath: DEFAULT_CONFIG_FILE,
+        clean: false,
+        help: false,
+    };
 
-  for (let index = 0; index < argv.length; index += 1) {
-    const arg = argv[index];
+    for (let index = 0; index < argv.length; index += 1) {
+        const arg = argv[index];
 
-    if (arg === "--help" || arg === "-h") {
-      parsed.help = true;
-      continue;
+        if (arg === '--help' || arg === '-h') {
+            parsed.help = true;
+            continue;
+        }
+
+        if (arg === '--clean') {
+            parsed.clean = true;
+            continue;
+        }
+
+        if (arg === '--config') {
+            parsed.configPath = argv[index + 1] || parsed.configPath;
+            index += 1;
+            continue;
+        }
     }
 
-    if (arg === "--clean") {
-      parsed.clean = true;
-      continue;
-    }
-
-    if (arg === "--config") {
-      parsed.configPath = argv[index + 1] || parsed.configPath;
-      index += 1;
-      continue;
-    }
-  }
-
-  return parsed;
+    return parsed;
 }
 
 /**
@@ -61,26 +61,29 @@ function parseArgs(argv) {
  * @returns {Promise<object|null>} Build result, or null when help is requested.
  */
 async function runBuildCli(argv = process.argv.slice(2), runtimeOptions = {}) {
-  const cwd = runtimeOptions.cwd || process.cwd();
-  const parsed = parseArgs(argv);
+    const cwd = runtimeOptions.cwd || process.cwd();
+    const parsed = parseArgs(argv);
 
-  if (parsed.help) {
-    printHelp();
-    return null;
-  }
+    if (parsed.help) {
+        printHelp();
+        return null;
+    }
 
-  const runtimeConfig = loadRuntimeConfig({ cwd, configPath: parsed.configPath });
-  const buildConfig = resolveBuildConfig(runtimeConfig);
+    const runtimeConfig = loadRuntimeConfig({ cwd, configPath: parsed.configPath });
+    const buildConfig = resolveBuildConfig(runtimeConfig);
 
-  // `--clean` is an explicit runtime override for local one-off builds.
-  if (parsed.clean) {
-    buildConfig.clean = true;
-  }
+    // `--clean` is an explicit runtime override for local one-off builds.
+    if (parsed.clean) {
+        if (!buildConfig.build || typeof buildConfig.build !== 'object') {
+            buildConfig.build = {};
+        }
+        buildConfig.build.clean = true;
+    }
 
-  return runBuild(buildConfig, { cwd });
+    return runBuild(buildConfig, { cwd });
 }
 
 module.exports = {
-  parseArgs,
-  runBuildCli,
+    parseArgs,
+    runBuildCli,
 };

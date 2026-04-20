@@ -21,3 +21,6 @@ t
 
 # Local dev tooling
 node_modules
+
+# examples
+examples/**/package-lock.json

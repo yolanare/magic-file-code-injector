@@ -3,19 +3,10 @@ const fs = require('node:fs');
 const fsPromises = require('node:fs/promises');
 const path = require('node:path');
 const livereload = require('livereload');
-const { normalizeBuildConfig, runBuild, exportOutputFileAsHtml } = require('./build');
+const { normalizeBuildConfig, runBuild } = require('./build');
 const { formatLogLine, formatPath, supportsColor } = require('./log-format');
 const DEFAULT_TEMPLATE = require('./mfci.config.cjs');
-const {
-    normalizePort,
-    normalizeType,
-    defaultExtensionsForType,
-    defaultUrlPrefixForType,
-    toForwardSlashes,
-    inferReloadType,
-    isPathInside,
-    isPathInsideOrSame,
-} = require('./server-utils');
+const { normalizePort, toForwardSlashes, inferReloadType, isPathInside, isPathInsideOrSame } = require('./server-utils');
 
 const INTERNAL_MANIFEST_ROUTE = '/magic-file-code-injector.manifest.json';
 const INTERNAL_PROJECT_NAME = 'magic-file-code-injector';
@@ -23,7 +14,6 @@ const INTERNAL_LOG_PREFIX = '[mfci]';
 const REFRESH_BATCH_WINDOW_MS = 150;
 
 const MIME_TYPES = {
-    '.html': 'text/html; charset=utf-8',
     '.css': 'text/css; charset=utf-8',
     '.js': 'text/javascript; charset=utf-8',
     '.mjs': 'text/javascript; charset=utf-8',
@@ -33,231 +23,105 @@ const MIME_TYPES = {
 };
 
 /**
- * Normalize one file definition into a safe runtime descriptor used by HTTP serving and manifest generation.
- * @param {any} definition - Normalized or raw file definition describing exposed source files.
- * @param {any} cwd - Working directory used to resolve relative paths.
- * @returns {object} Runtime-safe file definition with resolved paths.
- */
-function normalizeFileDefinition(definition, cwd) {
-    const source = definition || {};
-    const type = normalizeType(source.type);
-    const rootDir =
-        typeof source.rootDir === 'string' && source.rootDir.trim().length > 0 ? source.rootDir.trim()
-        : type === 'html' ? 'html'
-        : type === 'js' ? 'js'
-        : 'css';
-    const publicDir =
-        typeof source.publicDir === 'string' && source.publicDir.trim().length > 0 ?
-            source.publicDir.trim()
-        :   path.join(rootDir, 'public');
-    const urlPrefix = defaultUrlPrefixForType(type);
-    const extensions =
-        Array.isArray(source.extensions) && source.extensions.length > 0 ?
-            source.extensions
-        :   defaultExtensionsForType(type);
-    const fsRoot = path.resolve(cwd, publicDir);
-    const watchRoot = path.resolve(cwd, rootDir);
-
-    return {
-        type,
-        rootDir,
-        publicDir,
-        watchRoot,
-        fsRoot,
-        urlPrefix,
-        extensions: new Set(
-            extensions
-                .map((extension) =>
-                    String(extension || '')
-                        .trim()
-                        .toLowerCase()
-                )
-                .filter(Boolean)
-                .map((extension) => (extension.startsWith('.') ? extension : `.${extension}`))
-        ),
-    };
-}
-
-/**
- * Normalize full server config so downstream code can run without repeated guards.
- * @param {any} inputConfig - Raw configuration object provided by caller or config file.
- * @param {any} options - Runtime options that override or complement loaded config.
- * @returns {object} Fully normalized server configuration.
+ * Normalize dev-server config for deterministic runtime behavior.
+ * @param {any} inputConfig - Runtime config object.
+ * @param {any} options - Runtime options.
+ * @returns {object} Normalized server config.
  */
 function normalizeConfig(inputConfig = {}, options = {}) {
-    const defaults = DEFAULT_TEMPLATE;
     const cwd = options.cwd || process.cwd();
-    const source = inputConfig || {};
     const useColor = typeof options.useColor === 'boolean' ? options.useColor : supportsColor();
 
-    const host =
-        typeof source.host === 'string' && source.host.trim().length > 0 ?
-            source.host.trim()
-        :   defaults.host;
+    const source = inputConfig && typeof inputConfig === 'object' ? inputConfig : {};
+    const host = typeof source.host === 'string' && source.host.trim().length > 0 ? source.host.trim() : DEFAULT_TEMPLATE.host;
+    const port = normalizePort(source.port, DEFAULT_TEMPLATE.port);
+    const rootDir = path.resolve(
+        cwd,
+        typeof source.rootDir === 'string' && source.rootDir.trim().length > 0 ? source.rootDir.trim() : DEFAULT_TEMPLATE.rootDir
+    );
 
-    const port = normalizePort(source.port ?? defaults.port, defaults.port);
-    // These values are intentionally internal to avoid expanding the public config surface.
-    const manifestRoute = INTERNAL_MANIFEST_ROUTE;
-    const projectName = INTERNAL_PROJECT_NAME;
-    const logPrefix = INTERNAL_LOG_PREFIX;
+    const devRoot = path.resolve(rootDir, 'dev');
+    const buildRoot = path.resolve(rootDir, 'build');
+    const devDirs = {
+        html: path.resolve(devRoot, 'html'),
+        css: path.resolve(devRoot, 'css'),
+        js: path.resolve(devRoot, 'js'),
+        modules: path.resolve(devRoot, 'modules'),
+    };
+    const buildDirs = {
+        root: buildRoot,
+        html: path.resolve(buildRoot, 'html'),
+        css: path.resolve(buildRoot, 'css'),
+        js: path.resolve(buildRoot, 'js'),
+        modules: path.resolve(buildRoot, 'modules'),
+        merge: path.resolve(buildRoot, 'merge'),
+    };
 
-    const fileDefinitionsInput = Array.isArray(source.files) && source.files.length > 0 ? source.files : defaults.files;
-    const fileDefinitions = fileDefinitionsInput.map((definition) => normalizeFileDefinition(definition, cwd));
-
-    const watchDirs = Array.from(new Set(fileDefinitions.map((definition) => definition.watchRoot)))
-        .filter((directory) => fs.existsSync(directory));
+    const watchDirs = Object.values(devDirs).filter((directory) => fs.existsSync(directory));
 
     return {
         cwd,
         host,
         port,
-        manifestRoute,
-        projectName,
-        logPrefix,
-        useColor,
-        fileDefinitions,
+        rootDir,
+        devDirs,
+        buildDirs,
         watchDirs,
+        useColor,
+        logPrefix: INTERNAL_LOG_PREFIX,
+        projectName: INTERNAL_PROJECT_NAME,
+        manifestRoute: INTERNAL_MANIFEST_ROUTE,
     };
 }
 
 /**
- * Resolve build config from server input so dev-server can trigger the same pipeline as `mfci-build`.
- * @param {any} inputConfig - Raw configuration object provided by caller or config file.
- * @param {any} cwd - Working directory used to resolve relative paths.
- * @returns {object} Normalized build configuration.
+ * Build the extension watch list for LiveReload.
+ * @param {any} buildConfig - Normalized build config.
+ * @returns {string[]} Extension list without leading dots.
  */
-function normalizeServerBuildConfig(inputConfig, cwd) {
-    const source = inputConfig || {};
-    const buildSection = source.build && typeof source.build === 'object' ? source.build : {};
-    return normalizeBuildConfig(buildSection, { cwd });
-}
+function collectWatchedExtensions(buildConfig) {
+    const extensions = new Set(['html', 'css', 'js', 'mjs']);
 
-/**
- * Build the watched extension list for LiveReload so source files in `css/dev` and `js/dev` trigger rebuilds.
- * @param {any} config - Normalized runtime configuration for the current subsystem.
- * @param {any} buildConfig - Normalized runtime configuration for the current subsystem.
- * @returns {string[]} Extension list without dots (for example `scss`, `ts`, `css`, `js`).
- */
-function collectWatchedExtensions(config, buildConfig) {
-    const extensions = new Set();
-
-    // Output extensions exposed to the extension UI/manifest.
-    for (const definition of config.fileDefinitions) {
-        for (const extension of definition.extensions) {
-            extensions.add(String(extension || '').toLowerCase().replace(/^\./, ''));
-        }
+    for (const extension of buildConfig.languages.html.extensions) {
+        extensions.add(
+            String(extension || '')
+                .toLowerCase()
+                .replace(/^\./, '')
+        );
     }
-
-    // Build source extensions that must trigger recompilation.
-    for (const extension of buildConfig.sass.extensions) {
-        extensions.add(String(extension || '').toLowerCase().replace(/^\./, ''));
+    for (const extension of buildConfig.languages.sass.extensions) {
+        extensions.add(
+            String(extension || '')
+                .toLowerCase()
+                .replace(/^\./, '')
+        );
     }
-    for (const extension of buildConfig.js.extensions) {
-        extensions.add(String(extension || '').toLowerCase().replace(/^\./, ''));
-    }
-    for (const extension of buildConfig.html.extensions) {
-        extensions.add(String(extension || '').toLowerCase().replace(/^\./, ''));
+    for (const extension of buildConfig.languages.js.extensions) {
+        extensions.add(
+            String(extension || '')
+                .toLowerCase()
+                .replace(/^\./, '')
+        );
     }
 
     return Array.from(extensions).filter(Boolean);
 }
 
 /**
- * Check whether a changed file belongs to dev build sources that should trigger recompilation.
- * @param {any} filePath - Filesystem path or changed path used by the current operation.
- * @param {any} buildConfig - Normalized runtime configuration for the current subsystem.
- * @returns {boolean} True when path is inside configured HTML, Sass or JS source directories.
+ * Resolve build config from full runtime config for dev-server-triggered builds.
+ * @param {any} inputConfig - Runtime config object.
+ * @param {string} cwd - Working directory.
+ * @returns {object} Normalized build config.
  */
-function isBuildSourcePath(filePath, buildConfig) {
-    if (typeof filePath !== 'string' || filePath.length === 0) {
-        return false;
-    }
-
-    const absolutePath = path.resolve(filePath);
-    return (
-        isPathInsideOrSame(buildConfig.html.srcDir, absolutePath) ||
-        isPathInsideOrSame(buildConfig.sass.srcDir, absolutePath) ||
-        isPathInsideOrSame(buildConfig.js.srcDir, absolutePath)
-    );
+function normalizeServerBuildConfig(inputConfig, cwd) {
+    return normalizeBuildConfig(inputConfig, { cwd });
 }
 
 /**
- * Check whether a changed file belongs to build outputs generated from dev sources.
- * @param {any} filePath - Filesystem path or changed path used by the current operation.
- * @param {any} buildConfig - Normalized runtime configuration for the current subsystem.
- * @returns {boolean} True when path is inside configured HTML, Sass or JS output directories.
- */
-function isBuildOutputPath(filePath, buildConfig) {
-    if (typeof filePath !== 'string' || filePath.length === 0) {
-        return false;
-    }
-
-    const absolutePath = path.resolve(filePath);
-    return (
-        isPathInsideOrSame(buildConfig.html.outDir, absolutePath) ||
-        isPathInsideOrSame(buildConfig.sass.outDir, absolutePath) ||
-        isPathInsideOrSame(buildConfig.js.outDir, absolutePath)
-    );
-}
-
-/**
- * Check whether a changed path belongs to one configured public directory exposed to the extension.
- * @param {any} filePath - Filesystem path or changed path used by the current operation.
- * @param {any} config - Normalized runtime configuration for the current subsystem.
- * @returns {boolean} True when path is inside one configured `files[].publicDir`.
- */
-function isConfiguredPublicPath(filePath, config) {
-    if (typeof filePath !== 'string' || filePath.length === 0) {
-        return false;
-    }
-
-    const absolutePath = path.resolve(filePath);
-    return config.fileDefinitions.some((definition) => isPathInsideOrSame(definition.fsRoot, absolutePath));
-}
-
-/**
- * Derive a scoped build config from one source change to avoid rebuilding unrelated asset types.
- * @param {any} buildConfig - Normalized runtime configuration for the current subsystem.
- * @param {any} sourcePath - Filesystem path or changed path used by the current operation.
- * @returns {object} Build config narrowed to the changed source type when possible.
- */
-function createScopedBuildConfig(buildConfig, sourcePath) {
-    const scoped = {
-        ...buildConfig,
-        html: { ...buildConfig.html },
-        sass: { ...buildConfig.sass },
-        js: { ...buildConfig.js },
-        copy: Array.isArray(buildConfig.copy) ? buildConfig.copy.map((task) => ({ ...task })) : [],
-    };
-
-    if (typeof sourcePath !== 'string' || sourcePath.length === 0) {
-        return scoped;
-    }
-
-    const absolutePath = path.resolve(sourcePath);
-    const isHtmlSource = isPathInsideOrSame(scoped.html.srcDir, absolutePath);
-    const isSassSource = isPathInsideOrSame(scoped.sass.srcDir, absolutePath);
-    const isJsSource = isPathInsideOrSame(scoped.js.srcDir, absolutePath);
-
-    if (isHtmlSource && !isSassSource && !isJsSource) {
-        scoped.sass.enabled = false;
-        scoped.js.enabled = false;
-    } else if (isSassSource && !isJsSource && !isHtmlSource) {
-        scoped.html.enabled = false;
-        scoped.js.enabled = false;
-    } else if (isJsSource && !isSassSource && !isHtmlSource) {
-        scoped.html.enabled = false;
-        scoped.sass.enabled = false;
-    }
-
-    return scoped;
-}
-
-/**
- * Render filesystem paths in gray to keep log hierarchy focused on the action/result.
- * @param {any} config - Normalized runtime configuration for the current subsystem.
- * @param {any} inputPath - Filesystem path or changed path used by the current operation.
- * @returns {string} Styled relative path for terminal output.
+ * Render filesystem paths in gray for readable server logs.
+ * @param {any} config - Normalized server config.
+ * @param {string} inputPath - Path to render.
+ * @returns {string} Relative formatted path.
  */
 function formatServerPath(config, inputPath) {
     const absolutePath = path.resolve(String(inputPath || ''));
@@ -266,11 +130,11 @@ function formatServerPath(config, inputPath) {
 }
 
 /**
- * Emit one structured dev-server log line with level and prefix styling.
- * @param {any} config - Normalized runtime configuration for the current subsystem.
- * @param {'info'|'success'|'warn'|'error'} level - Severity level for hierarchy and colors.
- * @param {any} message - Runtime message payload received from UI/content/background.
- * @returns {void} Writes one formatted line to stdout/stderr.
+ * Emit one structured dev-server log line.
+ * @param {any} config - Normalized server config.
+ * @param {"info"|"success"|"warn"|"error"} level - Log level.
+ * @param {string} message - Log message.
+ * @returns {void} Writes one line.
  */
 function logServer(config, level, message) {
     const line = formatLogLine({
@@ -289,40 +153,37 @@ function logServer(config, level, message) {
 }
 
 /**
- * Convert a filesystem path to its public URL path used by the extension.
- * @param {any} fsPath - Filesystem path that must be converted to public URL form.
- * @param {any} definition - Normalized or raw file definition describing exposed source files.
- * @returns {string} Public URL path for a file.
+ * Recursively list files from one directory.
+ * @param {string} directoryPath - Directory path.
+ * @returns {Promise<string[]>} Discovered files.
  */
-function toUrlPath(fsPath, definition) {
-    const relativePath = toForwardSlashes(path.relative(definition.fsRoot, fsPath));
-    return `${definition.urlPrefix}/${relativePath}`;
-}
+async function walkDirectory(directoryPath) {
+    if (!fs.existsSync(directoryPath)) {
+        return [];
+    }
 
-/**
- * Resolve the path sent through LiveReload so the extension can match the exact manifest file.
- * @param {any} config - Normalized runtime configuration for the current subsystem.
- * @param {any} filePath - Absolute filesystem path of the refreshed file.
- * @returns {string} LiveReload path payload (prefer public URL path when file is exposed).
- */
-function toLiveReloadPath(config, filePath) {
-    const absolutePath = path.resolve(String(filePath || ''));
+    const entries = await fsPromises.readdir(directoryPath, { withFileTypes: true });
+    const files = [];
 
-    for (const definition of config.fileDefinitions) {
-        if (!isPathInside(definition.fsRoot, absolutePath)) {
+    for (const entry of entries) {
+        const fullPath = path.join(directoryPath, entry.name);
+        if (entry.isDirectory()) {
+            files.push(...(await walkDirectory(fullPath)));
             continue;
         }
 
-        return toUrlPath(absolutePath, definition);
+        if (entry.isFile()) {
+            files.push(fullPath);
+        }
     }
 
-    return absolutePath;
+    return files;
 }
 
 /**
- * Infer script mode so module files keep correct execution semantics in the page.
- * @param {any} urlPath - Public URL path used to infer script mode.
- * @returns {"script"|"module"} Script mode for browser injection.
+ * Infer script mode so module files keep correct execution semantics in page injection.
+ * @param {string} urlPath - Manifest/public URL path.
+ * @returns {"script"|"module"} Script mode.
  */
 function inferScriptType(urlPath) {
     if (urlPath.endsWith('.mjs') || urlPath.endsWith('.module.js')) {
@@ -332,9 +193,9 @@ function inferScriptType(urlPath) {
 }
 
 /**
- * Resolve response content-type for static file serving.
- * @param {any} filePath - Filesystem path or changed path used by the current operation.
- * @returns {string} HTTP content-type value.
+ * Resolve MIME type for static file responses.
+ * @param {string} filePath - Static file path.
+ * @returns {string} MIME type.
  */
 function getMimeType(filePath) {
     const extension = path.extname(filePath).toLowerCase();
@@ -342,61 +203,139 @@ function getMimeType(filePath) {
 }
 
 /**
- * Recursively list files to build the manifest and locate build inputs.
- * @param {any} directoryPath - Directory path to scan recursively.
- * @returns {Promise<string[]>} Absolute file paths discovered recursively.
+ * Resolve served type from file extension.
+ * @param {string} extension - Lowercased file extension.
+ * @returns {"css"|"js"|""} Served type key.
  */
-async function walkDirectory(directoryPath) {
-    if (!fs.existsSync(directoryPath)) {
-        return [];
+function inferServedTypeFromExtension(extension) {
+    if (extension === '.css') {
+        return 'css';
     }
-
-    const entries = await fsPromises.readdir(directoryPath, { withFileTypes: true });
-    const absolutePaths = [];
-
-    for (const entry of entries) {
-        const fullPath = path.join(directoryPath, entry.name);
-
-        if (entry.isDirectory()) {
-            absolutePaths.push(...(await walkDirectory(fullPath)));
-            continue;
-        }
-
-        if (entry.isFile()) {
-            absolutePaths.push(fullPath);
-        }
+    if (extension === '.js' || extension === '.mjs') {
+        return 'js';
     }
-
-    return absolutePaths;
+    return '';
 }
 
 /**
- * Build a manifest file descriptor only when file extension and path safety checks pass.
- * @param {any} definition - Normalized or raw file definition describing exposed source files.
- * @param {any} absolutePath - Absolute filesystem path of the current file candidate.
- * @returns {object|null} Manifest descriptor or null when file is not eligible.
+ * Resolve served relative path from one build output.
+ * @param {any} config - Normalized server config.
+ * @param {string} absolutePath - Absolute build output path.
+ * @param {"css"|"js"} servedType - Served type inferred from extension.
+ * @returns {string} Relative URL path fragment.
  */
-function buildDescriptor(definition, absolutePath) {
+function resolveServedRelativePath(config, absolutePath, servedType) {
     const normalizedPath = path.resolve(absolutePath);
+
+    if (isPathInside(config.buildDirs.modules, normalizedPath)) {
+        const relativeModulesPath = toForwardSlashes(path.relative(config.buildDirs.modules, normalizedPath));
+        return `modules/${relativeModulesPath}`;
+    }
+
+    if (servedType === 'css' && isPathInside(config.buildDirs.css, normalizedPath)) {
+        return toForwardSlashes(path.relative(config.buildDirs.css, normalizedPath));
+    }
+
+    if (servedType === 'js' && isPathInside(config.buildDirs.js, normalizedPath)) {
+        return toForwardSlashes(path.relative(config.buildDirs.js, normalizedPath));
+    }
+
+    return toForwardSlashes(path.relative(config.buildDirs.root, normalizedPath));
+}
+
+/**
+ * Convert one build output path to public URL path.
+ * @param {string} fsPath - Absolute filesystem path.
+ * @param {any} config - Normalized server config.
+ * @returns {string} Public URL path.
+ */
+function toUrlPath(fsPath, config) {
+    const absolutePath = path.resolve(fsPath);
+    if (!isPathInside(config.buildDirs.root, absolutePath)) {
+        return absolutePath;
+    }
+
+    const extension = path.extname(absolutePath).toLowerCase();
+    const servedType = inferServedTypeFromExtension(extension);
+    if (!servedType) {
+        return absolutePath;
+    }
+
+    const relativePath = resolveServedRelativePath(config, absolutePath, servedType);
+    return `/${servedType}/${relativePath}`;
+}
+
+/**
+ * Resolve one requested route path to the matching build output path.
+ * @param {any} config - Normalized server config.
+ * @param {"css"|"js"} servedType - Requested served type from route prefix.
+ * @param {string} relativePath - Relative route path after `/css/` or `/js/`.
+ * @returns {string|null} Resolved absolute build file path, or null when invalid.
+ */
+function resolveRequestedAbsolutePath(config, servedType, relativePath) {
+    const relative = String(relativePath || '').replace(/^\/+/, '');
+    if (!relative) {
+        return null;
+    }
+
+    if (relative.startsWith('modules/')) {
+        const modulesRelative = relative.slice('modules/'.length);
+        const modulesAbsolutePath = path.resolve(config.buildDirs.modules, modulesRelative);
+        if (!isPathInside(config.buildDirs.modules, modulesAbsolutePath)) {
+            return null;
+        }
+        return modulesAbsolutePath;
+    }
+
+    const baseDir = servedType === 'css' ? config.buildDirs.css : config.buildDirs.js;
+    const absolutePath = path.resolve(baseDir, relative);
+    if (!isPathInside(baseDir, absolutePath)) {
+        return null;
+    }
+    return absolutePath;
+}
+
+/**
+ * Resolve LiveReload payload path from one filesystem output path.
+ * @param {any} config - Normalized server config.
+ * @param {string} filePath - Output path.
+ * @returns {string} LiveReload payload path.
+ */
+function toLiveReloadPath(config, filePath) {
+    const absolutePath = path.resolve(String(filePath || ''));
+    if (!isPathInside(config.buildDirs.root, absolutePath)) {
+        return absolutePath;
+    }
+    return toUrlPath(absolutePath, config);
+}
+
+/**
+ * Build one manifest descriptor for one served file.
+ * @param {any} config - Normalized server config.
+ * @param {string} absolutePath - Candidate file path.
+ * @returns {object|null} Manifest descriptor or null.
+ */
+function buildDescriptor(config, absolutePath) {
+    const normalizedPath = path.resolve(absolutePath);
+    if (!isPathInside(config.buildDirs.root, normalizedPath)) {
+        return null;
+    }
+
     const extension = path.extname(normalizedPath).toLowerCase();
-
-    if (!definition.extensions.has(extension)) {
+    const servedType = inferServedTypeFromExtension(extension);
+    if (!servedType) {
         return null;
     }
 
-    if (!isPathInside(definition.fsRoot, normalizedPath)) {
-        return null;
-    }
-
-    const urlPath = toUrlPath(normalizedPath, definition);
+    const urlPath = toUrlPath(normalizedPath, config);
     const descriptor = {
-        id: `${definition.type}:${urlPath}`,
-        type: definition.type,
+        id: `${servedType}:${urlPath}`,
+        type: servedType,
         path: urlPath,
         label: path.basename(urlPath),
     };
 
-    if (definition.type === 'js') {
+    if (servedType === 'js') {
         descriptor.scriptType = inferScriptType(urlPath);
     }
 
@@ -404,29 +343,22 @@ function buildDescriptor(definition, absolutePath) {
 }
 
 /**
- * Assemble and sort the manifest consumed by popup/options and content injection.
- * @param {any} config - Normalized runtime configuration for the current subsystem.
- * @returns {Promise<object>} Manifest payload consumed by extension UI and sync.
+ * Build extension manifest from all CSS/JS files found under `build`.
+ * @param {any} config - Normalized server config.
+ * @returns {Promise<object>} Manifest payload.
  */
 async function buildManifest(config) {
     const files = [];
+    const discoveredFiles = await walkDirectory(config.buildDirs.root);
 
-    for (const definition of config.fileDefinitions) {
-        const discoveredFiles = await walkDirectory(definition.fsRoot);
-
-        for (const absolutePath of discoveredFiles) {
-            const descriptor = buildDescriptor(definition, absolutePath);
-            if (descriptor) {
-                files.push(descriptor);
-            }
+    for (const absolutePath of discoveredFiles) {
+        const descriptor = buildDescriptor(config, absolutePath);
+        if (descriptor) {
+            files.push(descriptor);
         }
     }
 
-    files.sort((left, right) => {
-        const leftKey = `${left.type}:${left.path}`;
-        const rightKey = `${right.type}:${right.path}`;
-        return leftKey.localeCompare(rightKey);
-    });
+    files.sort((left, right) => left.path.localeCompare(right.path));
 
     return {
         version: 1,
@@ -437,11 +369,11 @@ async function buildManifest(config) {
 }
 
 /**
- * Write a JSON HTTP response with no-cache and CORS headers expected by the extension.
- * @param {any} res - Node HTTP response object to write to.
- * @param {any} statusCode - HTTP status code to send.
- * @param {any} payload - Message or payload object exchanged between extension components.
- * @returns {void} Writes response payload and closes the stream.
+ * Write a JSON HTTP response with no-cache and CORS headers.
+ * @param {any} res - Node response object.
+ * @param {number} statusCode - HTTP status code.
+ * @param {any} payload - JSON payload.
+ * @returns {void} Sends response.
  */
 function writeJson(res, statusCode, payload) {
     res.writeHead(statusCode, {
@@ -454,10 +386,10 @@ function writeJson(res, statusCode, payload) {
 
 /**
  * Write a text HTTP response with no-cache and CORS headers.
- * @param {any} res - Node HTTP response object to write to.
- * @param {any} statusCode - HTTP status code to send.
- * @param {any} payload - Message or payload object exchanged between extension components.
- * @returns {void} Writes response payload and closes the stream.
+ * @param {any} res - Node response object.
+ * @param {number} statusCode - HTTP status code.
+ * @param {string} payload - Text payload.
+ * @returns {void} Sends response.
  */
 function writeText(res, statusCode, payload) {
     res.writeHead(statusCode, {
@@ -469,9 +401,9 @@ function writeText(res, statusCode, payload) {
 }
 
 /**
- * Create the HTTP server that serves manifest and file contents to the extension.
- * @param {any} config - Normalized runtime configuration for the current subsystem.
- * @returns {import("node:http").Server} HTTP server instance.
+ * Create HTTP server exposing manifest and served build files.
+ * @param {any} config - Normalized server config.
+ * @returns {import("node:http").Server} HTTP server.
  */
 function createHttpServer(config) {
     return http.createServer(async (req, res) => {
@@ -485,29 +417,40 @@ function createHttpServer(config) {
                 return;
             }
 
-            const definition = config.fileDefinitions.find(
-                (item) => pathname === item.urlPrefix || pathname.startsWith(`${item.urlPrefix}/`)
-            );
-            if (!definition) {
+            let servedType = '';
+            if (pathname === '/css' || pathname.startsWith('/css/')) {
+                servedType = 'css';
+            } else if (pathname === '/js' || pathname.startsWith('/js/')) {
+                servedType = 'js';
+            }
+
+            if (!servedType) {
                 writeText(res, 404, 'Not Found');
                 return;
             }
 
-            const relativePath = pathname.slice(definition.urlPrefix.length).replace(/^\/+/, '');
+            const routePrefix = `/${servedType}`;
+            const relativePath = pathname.slice(routePrefix.length).replace(/^\/+/, '');
             if (!relativePath) {
                 writeText(res, 400, 'Directory listing is disabled.');
                 return;
             }
 
-            const absolutePath = path.resolve(definition.fsRoot, relativePath);
-            // Path traversal guard: block requests escaping the configured root.
-            if (!isPathInside(definition.fsRoot, absolutePath)) {
+            const absolutePath = resolveRequestedAbsolutePath(config, servedType, relativePath);
+            if (!absolutePath) {
                 writeText(res, 400, 'Invalid path.');
                 return;
             }
 
             const stats = await fsPromises.stat(absolutePath).catch(() => null);
             if (!stats || !stats.isFile()) {
+                writeText(res, 404, 'Not Found');
+                return;
+            }
+
+            const extension = path.extname(absolutePath).toLowerCase();
+            const matchesType = (servedType === 'css' && extension === '.css') || (servedType === 'js' && (extension === '.js' || extension === '.mjs'));
+            if (!matchesType) {
                 writeText(res, 404, 'Not Found');
                 return;
             }
@@ -526,33 +469,54 @@ function createHttpServer(config) {
 }
 
 /**
- * Start HTTP + LiveReload services and register watchers used by the extension workflow.
- * @param {any} inputConfig - Raw configuration object provided by caller or config file.
- * @param {any} options - Runtime options that override or complement loaded config.
- * @returns {object} Running server handles and normalized config.
+ * Check whether one path belongs to one watched source directory.
+ * @param {string} filePath - Candidate path.
+ * @param {any} config - Normalized server config.
+ * @returns {boolean} True when path is inside watched dev folders.
+ */
+function isBuildSourcePath(filePath, config) {
+    if (typeof filePath !== 'string' || filePath.length === 0) {
+        return false;
+    }
+
+    const absolutePath = path.resolve(filePath);
+    return Object.values(config.devDirs).some((directory) => isPathInsideOrSame(directory, absolutePath));
+}
+
+/**
+ * Check whether a changed build output should be sent as extension refresh signal.
+ * @param {string} filePath - Build output path.
+ * @param {any} config - Normalized server config.
+ * @returns {boolean} True when output belongs to build and is CSS/JS.
+ */
+function isExtensionRefreshableOutput(filePath, config) {
+    const absolutePath = path.resolve(String(filePath || ''));
+    const extension = path.extname(absolutePath).toLowerCase();
+    const isCssOrJs = extension === '.css' || extension === '.js' || extension === '.mjs';
+    if (!isCssOrJs) {
+        return false;
+    }
+    return isPathInsideOrSame(config.buildDirs.root, absolutePath);
+}
+
+/**
+ * Start HTTP + LiveReload services and bind build/reload workflow.
+ * @param {any} inputConfig - Runtime config object.
+ * @param {any} options - Runtime options.
+ * @returns {object} Running handles.
  */
 function startDevServer(inputConfig = {}, options = {}) {
     const config = normalizeConfig(inputConfig, options);
     const buildConfig = normalizeServerBuildConfig(inputConfig, config.cwd);
-    const watchedExtensions = collectWatchedExtensions(config, buildConfig);
-    const buildRuntime = {
-        isRunning: false,
-        pendingSourcePaths: new Set(),
-        pendingGeneralReason: "",
-    };
-    const pendingRefreshLogs = [];
-    const pendingOutputRefreshByPath = new Map();
-    let refreshBatchTimer = null;
-    let outputRefreshBatchInFlight = false;
+    const watchedExtensions = collectWatchedExtensions(buildConfig);
 
     if (config.watchDirs.length === 0) {
         throw new Error(
-            `${config.logPrefix} No watch directory found. Configure "files[].rootDir" or create the expected directories.`
+            `${config.logPrefix} No watch directory found. Create at least one source directory under ${config.rootDir}/dev (html, css, js or modules).`
         );
     }
 
     const httpServer = createHttpServer(config);
-
     const lrServer = livereload.createServer({
         host: config.host,
         port: config.port,
@@ -561,145 +525,98 @@ function startDevServer(inputConfig = {}, options = {}) {
         server: httpServer,
     });
 
-    /**
-     * Log refresh actions immediately or queue them while a build run is active.
-     * @param {'info'|'success'|'warn'|'error'} level - Severity level for hierarchy and colors.
-     * @param {string} message - Refresh message to print in terminal.
-     * @returns {void} Logs now or stores for post-build flush.
-     */
-    function logRefreshAction(level, message) {
-        if (buildRuntime.isRunning) {
-            pendingRefreshLogs.push({ level, message });
-            return;
-        }
+    const buildRuntime = {
+        isRunning: false,
+        pendingSourcePaths: new Set(),
+        pendingGeneralReason: '',
+    };
 
-        logServer(config, level, message);
-    }
+    const pendingRefreshByPath = new Map();
+    let refreshBatchTimer = null;
+    let outputRefreshBatchInFlight = false;
 
     /**
-     * Print queued refresh logs after build completion so CLI output reads in natural order.
-     * @returns {void} Flushes queued refresh lines.
-     */
-    function flushRefreshLogs() {
-        if (pendingRefreshLogs.length === 0) {
-            return;
-        }
-
-        for (const entry of pendingRefreshLogs.splice(0)) {
-            logServer(config, entry.level, entry.message);
-        }
-    }
-
-    /**
-     * Log one refresh signal line with type-specific wording.
-     * @param {string} filePath - Absolute filesystem path of the refreshed file.
-     * @param {"html"|"css"|"js"|"asset"} reloadType - Refresh category derived from output extension.
-     * @returns {void} Writes one refresh log line.
+     * Log one refresh signal line.
+     * @param {string} filePath - Output file path.
+     * @param {"html"|"css"|"js"|"asset"} reloadType - Reload type.
+     * @returns {void} Writes one log line.
      */
     function logRefreshSignal(filePath, reloadType) {
-        if (reloadType === 'html') {
-            logRefreshAction('success', `HTML refresh signal sent: ${formatServerPath(config, filePath)}`);
-            return;
-        }
-
         if (reloadType === 'css') {
-            logRefreshAction('success', `CSS hot refresh signal sent: ${formatServerPath(config, filePath)}`);
+            logServer(config, 'success', `CSS hot refresh signal sent: ${formatServerPath(config, filePath)}`);
             return;
         }
 
         if (reloadType === 'js') {
-            logRefreshAction(
-                'success',
-                `JS refresh signal sent: ${formatServerPath(config, filePath)} (extension may trigger full reload)`
-            );
+            logServer(config, 'success', `JS refresh signal sent: ${formatServerPath(config, filePath)}`);
             return;
         }
 
-        logRefreshAction('info', `Refresh signal sent (${reloadType}): ${formatServerPath(config, filePath)}`);
+        if (reloadType === 'html') {
+            logServer(config, 'success', `HTML refresh signal sent: ${formatServerPath(config, filePath)}`);
+            return;
+        }
+
+        logServer(config, 'info', `Refresh signal sent (${reloadType}): ${formatServerPath(config, filePath)}`);
     }
 
     /**
-     * Flush queued output refreshes once the debounce window elapsed and no build is currently running.
-     * @returns {void} Sends refresh events to LiveReload for queued output files.
+     * Queue one output refresh path for debounced signal dispatch.
+     * @param {string} filePath - Output path to refresh.
+     * @returns {void} Stores path and schedules flush.
      */
-    async function flushOutputRefreshBatch() {
+    function queueOutputRefresh(filePath) {
+        const absolutePath = path.resolve(filePath);
+        pendingRefreshByPath.set(absolutePath, inferReloadType(absolutePath));
+
+        if (refreshBatchTimer) {
+            clearTimeout(refreshBatchTimer);
+        }
+
+        refreshBatchTimer = setTimeout(() => {
+            refreshBatchTimer = null;
+            void flushRefreshBatch();
+        }, REFRESH_BATCH_WINDOW_MS);
+    }
+
+    /**
+     * Flush queued refresh signals.
+     * @returns {Promise<void>} Completes when queue is flushed.
+     */
+    async function flushRefreshBatch() {
         if (outputRefreshBatchInFlight) {
-            scheduleOutputRefreshBatch();
             return;
         }
 
-        if (pendingOutputRefreshByPath.size === 0) {
-            return;
-        }
-
-        if (buildRuntime.isRunning) {
-            scheduleOutputRefreshBatch();
+        if (pendingRefreshByPath.size === 0) {
             return;
         }
 
         outputRefreshBatchInFlight = true;
-        const batchEntries = Array.from(pendingOutputRefreshByPath.entries()).sort(([left], [right]) => left.localeCompare(right));
-        pendingOutputRefreshByPath.clear();
+        const batchEntries = Array.from(pendingRefreshByPath.entries()).sort(([left], [right]) => left.localeCompare(right));
+        pendingRefreshByPath.clear();
 
         try {
             for (const [filePath, reloadType] of batchEntries) {
-                try {
-                    await exportOutputFileAsHtml(buildConfig, filePath, {
-                        cwd: config.cwd,
-                        logger: () => {},
-                        useColor: config.useColor,
-                    });
-                } catch (error) {
-                    const message = String(error && error.message ? error.message : error);
-                    logRefreshAction('warn', `HTML export skipped for ${formatServerPath(config, filePath)}: ${message}`);
-                }
-
                 logRefreshSignal(filePath, reloadType);
                 originalRefresh(toLiveReloadPath(config, filePath));
             }
         } finally {
             outputRefreshBatchInFlight = false;
-            if (pendingOutputRefreshByPath.size > 0) {
-                scheduleOutputRefreshBatch();
+            if (pendingRefreshByPath.size > 0) {
+                queueOutputRefresh(Array.from(pendingRefreshByPath.keys())[0]);
             }
         }
     }
 
     /**
-     * Schedule one debounced flush for queued output refresh events.
-     * @returns {void} Arms refresh debounce timer when not already pending.
-     */
-    function scheduleOutputRefreshBatch() {
-        if (refreshBatchTimer) {
-            return;
-        }
-
-        refreshBatchTimer = setTimeout(() => {
-            refreshBatchTimer = null;
-            void flushOutputRefreshBatch();
-        }, REFRESH_BATCH_WINDOW_MS);
-    }
-
-    /**
-     * Queue one output refresh event and debounce real signal emission.
-     * @param {string} filePath - Output file path that triggered LiveReload.
-     * @returns {void} Stores event and schedules batch flush.
-     */
-    function queueOutputRefresh(filePath) {
-        const absolutePath = path.resolve(filePath);
-        pendingOutputRefreshByPath.set(absolutePath, inferReloadType(absolutePath));
-        scheduleOutputRefreshBatch();
-    }
-
-    /**
-     * Queue build execution to avoid overlapping runs when multiple source events happen quickly.
-     * @param {any} reason - Sync reason used for diagnostics and message tracing.
-     * @param {any} sourcePath - Filesystem path or changed path used by the current operation.
-     * @returns {Promise<void>} Resolves after build queue is drained.
+     * Run build queue from one source-triggered reason.
+     * @param {string} reason - Build reason.
+     * @param {string} sourcePath - Optional source path.
+     * @returns {Promise<void>} Resolves after queue flush.
      */
     async function runBuildFromDevServer(reason, sourcePath) {
-        const normalizedSourcePath =
-            typeof sourcePath === 'string' && sourcePath.length > 0 ? path.resolve(sourcePath) : '';
+        const normalizedSourcePath = typeof sourcePath === 'string' && sourcePath.length > 0 ? path.resolve(sourcePath) : '';
 
         if (reason === 'source-change' && normalizedSourcePath) {
             buildRuntime.pendingSourcePaths.add(normalizedSourcePath);
@@ -727,51 +644,41 @@ function startDevServer(inputConfig = {}, options = {}) {
                     buildRuntime.pendingGeneralReason = '';
                 }
 
-                const sourceLabel = runSourcePath || '(startup)';
-
-                const scopedBuildConfig = createScopedBuildConfig(buildConfig, runSourcePath);
-                const buildResult = await runBuild(scopedBuildConfig, {
+                const buildResult = await runBuild(inputConfig, {
                     cwd: config.cwd,
-                    logger: () => {},
                     useColor: config.useColor,
+                    logger: () => {},
                     changedSourcePath: runSourcePath,
                 });
-                const sourceDetails =
-                    sourceLabel === '(startup)' ? sourceLabel : formatServerPath(config, sourceLabel);
-                if (runReason === 'source-change' && sourceLabel !== '(startup)') {
-                    logServer(config, 'success', `Build done: ${sourceDetails}`);
+
+                if (runReason === 'source-change' && runSourcePath) {
+                    logServer(config, 'success', `Build done: ${formatServerPath(config, runSourcePath)}`);
                 } else {
-                    const totalBuilt = buildResult && buildResult.stats ? buildResult.stats.total : 0;
-                    logServer(config, 'success', `Build done (${runReason}): ${totalBuilt} file(s) from ${sourceDetails}`);
+                    logServer(config, 'success', `Build done (${runReason}): ${buildResult.stats.total} file(s)`);
                 }
-                flushRefreshLogs();
+
+                if (runReason === 'source-change') {
+                    for (const outputPath of buildResult.changedOutputs) {
+                        if (isExtensionRefreshableOutput(outputPath, config)) {
+                            queueOutputRefresh(outputPath);
+                        }
+                    }
+                }
             } while (buildRuntime.pendingSourcePaths.size > 0 || buildRuntime.pendingGeneralReason);
         } catch (error) {
             const message = String(error && error.message ? error.message : error);
             logServer(config, 'error', `Build failed: ${message}`);
-            flushRefreshLogs();
         } finally {
             buildRuntime.isRunning = false;
         }
     }
 
     const originalRefresh = lrServer.refresh.bind(lrServer);
-    // Wrap refresh to keep an explicit audit trail of what triggered the reload.
     lrServer.refresh = (filePath) => {
-        // Source files in `css/dev` and `js/dev` should trigger build first, then output changes will trigger refresh.
-        if (isBuildSourcePath(filePath, buildConfig)) {
+        if (isBuildSourcePath(filePath, config)) {
             runBuildFromDevServer('source-change', filePath).catch(() => {});
             return;
         }
-
-        // Log refresh actions in terminal so developers can correlate file updates with browser behavior.
-        if (isBuildOutputPath(filePath, buildConfig) || isConfiguredPublicPath(filePath, config)) {
-            queueOutputRefresh(filePath);
-            return;
-        }
-
-        const reloadType = inferReloadType(filePath);
-        logServer(config, 'info', `Live change detected (${reloadType}): ${formatServerPath(config, filePath)}`);
         return originalRefresh(filePath);
     };
 
@@ -784,6 +691,7 @@ function startDevServer(inputConfig = {}, options = {}) {
     logServer(config, 'info', `Manifest endpoint: http://${config.host}:${config.port}${config.manifestRoute}`);
     logServer(config, 'info', `WebSocket endpoint: ws://${config.host}:${config.port}/livereload`);
     logServer(config, 'info', `Watching extensions: ${watchedExtensions.join(', ')}`);
+
     runBuildFromDevServer('startup', '').catch(() => {});
 
     const close = () => {
@@ -821,7 +729,7 @@ function startDevServer(inputConfig = {}, options = {}) {
 module.exports = {
     DEFAULT_HOST: DEFAULT_TEMPLATE.host,
     DEFAULT_PORT: DEFAULT_TEMPLATE.port,
-    DEFAULT_FILE_DEFINITIONS: DEFAULT_TEMPLATE.files,
+    DEFAULT_ROOT_DIR: DEFAULT_TEMPLATE.rootDir,
     normalizeConfig,
     startDevServer,
 };
