@@ -28,6 +28,40 @@ async function updateEnabledFileSelection(nextSelection) {
 }
 
 /**
+ * Split one manifest URL path into file name + parent folder for clearer display.
+ * @param {any} inputPath - Manifest path (for example `/js/test.js`).
+ * @param {any} fallbackName - Fallback label when path parsing fails.
+ * @returns {{fileName:string,parentPath:string}} Display-safe parts.
+ */
+function resolveFileDisplayParts(inputPath, fallbackName) {
+  const sourcePath = typeof inputPath === "string" ? inputPath : "";
+  const sanitized = sourcePath.split("?")[0].split("#")[0];
+  const normalized = sanitized.startsWith("/") ? sanitized : `/${sanitized}`;
+  const segments = normalized.split("/").filter(Boolean);
+
+  if (segments.length === 0) {
+    return {
+      fileName: typeof fallbackName === "string" && fallbackName.length > 0 ? fallbackName : "unknown",
+      parentPath: "/",
+    };
+  }
+
+  const fileName = segments[segments.length - 1] || "unknown";
+  const parentSegments = segments.slice(0, -1);
+
+  // Manifest paths for modules are served as /css/modules/... or /js/modules/...,
+  // but the UI should show the logical module path without the served-type prefix.
+  const normalizedParentSegments =
+    parentSegments.length >= 2 && (parentSegments[0] === "css" || parentSegments[0] === "js") && parentSegments[1] === "modules" ?
+      parentSegments.slice(1)
+    : parentSegments;
+
+  const parentPath = normalizedParentSegments.length > 0 ? `/${normalizedParentSegments.join("/")}/` : "/";
+
+  return { fileName, parentPath };
+}
+
+/**
  * Render one popup file row with toggle behavior bound to host settings.
  * @param {any} file - Manifest or build file descriptor currently processed.
  * @param {any} enabledFileIds - Enabled file IDs for the current host.
@@ -56,20 +90,24 @@ function createFileRow(file, enabledFileIds) {
   const meta = document.createElement("div");
   meta.className = "file-meta";
 
+  const displayParts = resolveFileDisplayParts(file.path, file.label);
+
   const label = document.createElement("div");
   label.className = "file-label";
-  label.textContent = file.label;
+  label.textContent = displayParts.fileName;
 
   const pathValue = document.createElement("div");
   pathValue.className = "file-path";
-  pathValue.textContent = file.path;
+  pathValue.textContent = displayParts.parentPath;
+  pathValue.title = typeof file.path === "string" ? file.path : "";
 
   meta.appendChild(label);
   meta.appendChild(pathValue);
 
   const badge = document.createElement("span");
-  badge.className = "file-badge";
-  badge.textContent = file.type === "js" && file.scriptType === "module" ? "js-module" : file.type;
+  const badgeType = file.type === "js" && file.scriptType === "module" ? "js-module" : file.type;
+  badge.className = `file-badge file-badge-${badgeType}`;
+  badge.textContent = badgeType;
 
   row.appendChild(checkbox);
   row.appendChild(meta);
