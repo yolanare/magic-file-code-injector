@@ -88,11 +88,10 @@ function loadConfigFromFile(configPath, cwd) {
  * @returns {object} Fully merged runtime config.
  */
 function loadRuntimeConfig(options = {}) {
-    const cwd = options.cwd ?? process.cwd();
-    const configPath = options.configPath ?? DEFAULT_CONFIG_FILE;
+    const cwd = options.cwd || process.cwd();
+    const configPath = options.configPath || DEFAULT_CONFIG_FILE;
     const fileConfig = loadConfigFromFile(configPath, cwd);
-    const merged = mergeConfigValue(DEFAULT_TEMPLATE, fileConfig);
-    return mergeConfigValue(merged, options.overrides ?? {});
+    return mergeConfigValue(mergeConfigValue(DEFAULT_TEMPLATE, fileConfig), options.overrides || {});
 }
 
 /**
@@ -101,13 +100,11 @@ function loadRuntimeConfig(options = {}) {
  * @returns {object} Build section only.
  */
 function resolveBuildConfig(runtimeConfig) {
-    if (!runtimeConfig || typeof runtimeConfig !== 'object') {
-        return {};
-    }
+    const config = runtimeConfig && typeof runtimeConfig === 'object' ? runtimeConfig : {};
 
     return {
-        rootDir: runtimeConfig.rootDir,
-        build: cloneConfigValue(runtimeConfig.build || {}),
+        rootDir: config.rootDir,
+        build: cloneConfigValue(config.build || {}),
     };
 }
 

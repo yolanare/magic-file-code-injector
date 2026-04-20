@@ -23,6 +23,15 @@ const MIME_TYPES = {
 };
 
 /**
+ * Check non-empty string values before normalization.
+ * @param {any} value - Candidate value.
+ * @returns {boolean} True when value is a non-empty string.
+ */
+function isNonEmptyString(value) {
+    return typeof value === 'string' && value.trim().length > 0;
+}
+
+/**
  * Normalize dev-server config for deterministic runtime behavior.
  * @param {any} inputConfig - Runtime config object.
  * @param {any} options - Runtime options.
@@ -33,12 +42,9 @@ function normalizeConfig(inputConfig = {}, options = {}) {
     const useColor = typeof options.useColor === 'boolean' ? options.useColor : supportsColor();
 
     const source = inputConfig && typeof inputConfig === 'object' ? inputConfig : {};
-    const host = typeof source.host === 'string' && source.host.trim().length > 0 ? source.host.trim() : DEFAULT_TEMPLATE.host;
+    const host = isNonEmptyString(source.host) ? source.host.trim() : DEFAULT_TEMPLATE.host;
     const port = normalizePort(source.port, DEFAULT_TEMPLATE.port);
-    const rootDir = path.resolve(
-        cwd,
-        typeof source.rootDir === 'string' && source.rootDir.trim().length > 0 ? source.rootDir.trim() : DEFAULT_TEMPLATE.rootDir
-    );
+    const rootDir = path.resolve(cwd, isNonEmptyString(source.rootDir) ? source.rootDir.trim() : DEFAULT_TEMPLATE.rootDir);
 
     const devRoot = path.resolve(rootDir, 'dev');
     const buildRoot = path.resolve(rootDir, 'build');
@@ -82,39 +88,17 @@ function normalizeConfig(inputConfig = {}, options = {}) {
 function collectWatchedExtensions(buildConfig) {
     const extensions = new Set(['html', 'css', 'js', 'mjs']);
 
-    for (const extension of buildConfig.languages.html.extensions) {
-        extensions.add(
-            String(extension || '')
-                .toLowerCase()
-                .replace(/^\./, '')
-        );
-    }
-    for (const extension of buildConfig.languages.sass.extensions) {
-        extensions.add(
-            String(extension || '')
-                .toLowerCase()
-                .replace(/^\./, '')
-        );
-    }
-    for (const extension of buildConfig.languages.js.extensions) {
-        extensions.add(
-            String(extension || '')
-                .toLowerCase()
-                .replace(/^\./, '')
-        );
+    for (const languageKey of ['html', 'sass', 'js']) {
+        for (const extension of buildConfig.languages[languageKey].extensions) {
+            extensions.add(
+                String(extension ?? '')
+                    .toLowerCase()
+                    .replace(/^\./, '')
+            );
+        }
     }
 
     return Array.from(extensions).filter(Boolean);
-}
-
-/**
- * Resolve build config from full runtime config for dev-server-triggered builds.
- * @param {any} inputConfig - Runtime config object.
- * @param {string} cwd - Working directory.
- * @returns {object} Normalized build config.
- */
-function normalizeServerBuildConfig(inputConfig, cwd) {
-    return normalizeBuildConfig(inputConfig, { cwd });
 }
 
 /**
@@ -302,7 +286,7 @@ function resolveRequestedAbsolutePath(config, servedType, relativePath) {
  * @returns {string} LiveReload payload path.
  */
 function toLiveReloadPath(config, filePath) {
-    const absolutePath = path.resolve(String(filePath || ''));
+    const absolutePath = path.resolve(String(filePath ?? ''));
     if (!isPathInside(config.buildDirs.root, absolutePath)) {
         return absolutePath;
     }
@@ -401,29 +385,39 @@ function writeText(res, statusCode, payload) {
 }
 
 /**
+ * Resolve served type from one request pathname.
+ * @param {string} pathname - Decoded request pathname.
+ * @returns {"css"|"js"|""} Served type.
+ */
+function resolveServedTypeFromPathname(pathname) {
+    if (pathname === '/css' || pathname.startsWith('/css/')) {
+        return 'css';
+    }
+    if (pathname === '/js' || pathname.startsWith('/js/')) {
+        return 'js';
+    }
+    return '';
+}
+
+/**
  * Create HTTP server exposing manifest and served build files.
  * @param {any} config - Normalized server config.
+ * @param {() => Promise<object>} getManifest - Lazy manifest getter.
  * @returns {import("node:http").Server} HTTP server.
  */
-function createHttpServer(config) {
+function createHttpServer(config, getManifest) {
     return http.createServer(async (req, res) => {
         try {
-            const requestUrl = new URL(req.url || '/', `http://${config.host}:${config.port}`);
+            const requestUrl = new URL(req.url ?? '/', `http://${config.host}:${config.port}`);
             const pathname = decodeURIComponent(requestUrl.pathname);
 
             if (pathname === config.manifestRoute) {
-                const manifest = await buildManifest(config);
+                const manifest = await getManifest();
                 writeJson(res, 200, manifest);
                 return;
             }
 
-            let servedType = '';
-            if (pathname === '/css' || pathname.startsWith('/css/')) {
-                servedType = 'css';
-            } else if (pathname === '/js' || pathname.startsWith('/js/')) {
-                servedType = 'js';
-            }
-
+            const servedType = resolveServedTypeFromPathname(pathname);
             if (!servedType) {
                 writeText(res, 404, 'Not Found');
                 return;
@@ -475,7 +469,7 @@ function createHttpServer(config) {
  * @returns {boolean} True when path is inside watched dev folders.
  */
 function isBuildSourcePath(filePath, config) {
-    if (typeof filePath !== 'string' || filePath.length === 0) {
+    if (!filePath) {
         return false;
     }
 
@@ -490,13 +484,9 @@ function isBuildSourcePath(filePath, config) {
  * @returns {boolean} True when output belongs to build and is CSS/JS.
  */
 function isExtensionRefreshableOutput(filePath, config) {
-    const absolutePath = path.resolve(String(filePath || ''));
+    const absolutePath = path.resolve(String(filePath ?? ''));
     const extension = path.extname(absolutePath).toLowerCase();
-    const isCssOrJs = extension === '.css' || extension === '.js' || extension === '.mjs';
-    if (!isCssOrJs) {
-        return false;
-    }
-    return isPathInsideOrSame(config.buildDirs.root, absolutePath);
+    return (extension === '.css' || extension === '.js' || extension === '.mjs') && isPathInsideOrSame(config.buildDirs.root, absolutePath);
 }
 
 /**
@@ -507,8 +497,9 @@ function isExtensionRefreshableOutput(filePath, config) {
  */
 function startDevServer(inputConfig = {}, options = {}) {
     const config = normalizeConfig(inputConfig, options);
-    const buildConfig = normalizeServerBuildConfig(inputConfig, config.cwd);
+    const buildConfig = normalizeBuildConfig(inputConfig, { cwd: config.cwd });
     const watchedExtensions = collectWatchedExtensions(buildConfig);
+    let manifestCache = null;
 
     if (config.watchDirs.length === 0) {
         throw new Error(
@@ -516,7 +507,14 @@ function startDevServer(inputConfig = {}, options = {}) {
         );
     }
 
-    const httpServer = createHttpServer(config);
+    const getManifest = async () => {
+        if (!manifestCache) {
+            manifestCache = await buildManifest(config);
+        }
+        return manifestCache;
+    };
+
+    const httpServer = createHttpServer(config, getManifest);
     const lrServer = livereload.createServer({
         host: config.host,
         port: config.port,
@@ -534,6 +532,7 @@ function startDevServer(inputConfig = {}, options = {}) {
     const pendingRefreshByPath = new Map();
     let refreshBatchTimer = null;
     let outputRefreshBatchInFlight = false;
+    let originalRefresh = null;
 
     /**
      * Log one refresh signal line.
@@ -568,7 +567,14 @@ function startDevServer(inputConfig = {}, options = {}) {
     function queueOutputRefresh(filePath) {
         const absolutePath = path.resolve(filePath);
         pendingRefreshByPath.set(absolutePath, inferReloadType(absolutePath));
+        scheduleRefreshBatchFlush();
+    }
 
+    /**
+     * Schedule debounced refresh flush once.
+     * @returns {void}
+     */
+    function scheduleRefreshBatchFlush() {
         if (refreshBatchTimer) {
             clearTimeout(refreshBatchTimer);
         }
@@ -604,7 +610,7 @@ function startDevServer(inputConfig = {}, options = {}) {
         } finally {
             outputRefreshBatchInFlight = false;
             if (pendingRefreshByPath.size > 0) {
-                queueOutputRefresh(Array.from(pendingRefreshByPath.keys())[0]);
+                scheduleRefreshBatchFlush();
             }
         }
     }
@@ -650,6 +656,9 @@ function startDevServer(inputConfig = {}, options = {}) {
                     logger: () => {},
                     changedSourcePath: runSourcePath,
                 });
+                if (buildResult.changedOutputs.length > 0) {
+                    manifestCache = null;
+                }
 
                 if (runReason === 'source-change' && runSourcePath) {
                     logServer(config, 'success', `Build done: ${formatServerPath(config, runSourcePath)}`);
@@ -673,7 +682,7 @@ function startDevServer(inputConfig = {}, options = {}) {
         }
     }
 
-    const originalRefresh = lrServer.refresh.bind(lrServer);
+    originalRefresh = lrServer.refresh.bind(lrServer);
     lrServer.refresh = (filePath) => {
         if (isBuildSourcePath(filePath, config)) {
             runBuildFromDevServer('source-change', filePath).catch(() => {});

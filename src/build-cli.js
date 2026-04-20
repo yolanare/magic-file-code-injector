@@ -25,6 +25,11 @@ Options:
  * @returns {object} Parsed command-line options.
  */
 function parseArgs(argv) {
+    const takeOptionValue = (index, fallback = '') => {
+        const value = argv[index + 1];
+        return [typeof value === 'string' && value.length > 0 ? value : fallback, index + 1];
+    };
+
     const parsed = {
         configPath: DEFAULT_CONFIG_FILE,
         clean: false,
@@ -34,20 +39,22 @@ function parseArgs(argv) {
     for (let index = 0; index < argv.length; index += 1) {
         const arg = argv[index];
 
-        if (arg === '--help' || arg === '-h') {
-            parsed.help = true;
-            continue;
-        }
-
-        if (arg === '--clean') {
-            parsed.clean = true;
-            continue;
-        }
-
-        if (arg === '--config') {
-            parsed.configPath = argv[index + 1] || parsed.configPath;
-            index += 1;
-            continue;
+        switch (arg) {
+            case '--help':
+            case '-h':
+                parsed.help = true;
+                break;
+            case '--clean':
+                parsed.clean = true;
+                break;
+            case '--config': {
+                const [configPath, nextIndex] = takeOptionValue(index, parsed.configPath);
+                parsed.configPath = configPath;
+                index = nextIndex;
+                break;
+            }
+            default:
+                break;
         }
     }
 

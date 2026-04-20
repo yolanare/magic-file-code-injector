@@ -5,6 +5,7 @@ const sass = require('sass');
 const esbuild = require('esbuild');
 const { formatLogLine, formatPath, supportsColor } = require('./log-format');
 const DEFAULT_TEMPLATE = require('./mfci.config.cjs');
+const { toForwardSlashes, isPathInsideOrSame } = require('./server-utils');
 
 const DEFAULT_BUILD_LOG_PREFIX = '[mfci-build]';
 
@@ -170,24 +171,13 @@ function normalizeBuildConfig(inputConfig = {}, options = {}) {
 }
 
 /**
- * Normalize path separators to POSIX for deterministic logs and URLs.
- * @param {string} value - Path value.
- * @returns {string} Path with forward slashes.
- */
-function toPosixPath(value) {
-    return String(value || '')
-        .split(path.sep)
-        .join('/');
-}
-
-/**
  * Render one path with project-relative and dim formatting.
  * @param {any} config - Normalized build config.
  * @param {string} absolutePath - Absolute filesystem path.
  * @returns {string} Formatted path label.
  */
 function displayPath(config, absolutePath) {
-    const relative = toPosixPath(path.relative(config.cwd, absolutePath) || '.');
+    const relative = toForwardSlashes(path.relative(config.cwd, absolutePath) || '.');
     return formatPath(relative, { useColor: config.useColor });
 }
 
@@ -247,17 +237,6 @@ async function ensureParentDirectory(filePath) {
 }
 
 /**
- * Path containment check (including exact same path).
- * @param {string} basePath - Base directory.
- * @param {string} targetPath - Candidate path.
- * @returns {boolean} True when target is inside or equal to base.
- */
-function isPathInsideOrSame(basePath, targetPath) {
-    const relative = path.relative(path.resolve(basePath), path.resolve(targetPath));
-    return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
-}
-
-/**
  * Replace one extension while preserving relative folders.
  * @param {string} filePath - Input file path.
  * @param {string} extension - New extension.
@@ -275,6 +254,15 @@ function replaceExtension(filePath, extension) {
  */
 function stripLeadingCssCharset(cssText) {
     return String(cssText || '').replace(/^\uFEFF?\s*@charset\s+["'][^"']+["'];\s*/i, '');
+}
+
+/**
+ * Read one UTF-8 file and trim surrounding whitespace.
+ * @param {string} filePath - Source file path.
+ * @returns {Promise<string>} Trimmed file content.
+ */
+async function readTextFileTrimmed(filePath) {
+    return String((await fsPromises.readFile(filePath, 'utf8')) || '').trim();
 }
 
 /**
@@ -321,6 +309,25 @@ function renderJsOutputPath(relativePath, sourceExtension) {
     if (extension === '.ts' || extension === '.tsx' || extension === '.jsx' || extension === '.cjs') {
         return replaceExtension(relativePath, '.js');
     }
+    return relativePath;
+}
+
+/**
+ * Render one output-relative path from source type + source path metadata.
+ * @param {"html"|"css"|"js"} sourceType - Source type.
+ * @param {string} relativePath - Source path relative to source root.
+ * @param {string} sourceExtension - Source extension.
+ * @returns {string} Output-relative path.
+ */
+function renderOutputPathBySourceType(sourceType, relativePath, sourceExtension) {
+    if (sourceType === 'css') {
+        return sourceExtension === '.css' ? relativePath : replaceExtension(relativePath, '.css');
+    }
+
+    if (sourceType === 'js') {
+        return renderJsOutputPath(relativePath, sourceExtension);
+    }
+
     return relativePath;
 }
 
@@ -384,6 +391,50 @@ function displayPathPair(config, sourcePath, outputPath) {
 async function collectCandidates(sourceDir, extensions) {
     const files = await walkDirectory(sourceDir);
     return files.filter((filePath) => extensions.has(path.extname(filePath).toLowerCase())).sort();
+}
+
+/**
+ * Resolve changed source state for one source directory and extension set.
+ * @param {string} changedPath - Absolute changed source path.
+ * @param {string} sourceDir - Source root directory.
+ * @param {Set<string>} extensions - Allowed source extensions.
+ * @returns {null|{path:string,extension:string,exists:boolean,isKnownExtension:boolean}} Changed source state.
+ */
+function resolveChangedCandidateState(changedPath, sourceDir, extensions) {
+    if (!changedPath || !isPathInsideOrSame(sourceDir, changedPath)) {
+        return null;
+    }
+
+    const extension = path.extname(changedPath).toLowerCase();
+    return {
+        path: changedPath,
+        extension,
+        exists: fs.existsSync(changedPath),
+        isKnownExtension: extensions.has(extension),
+    };
+}
+
+/**
+ * Select build candidates from one changed source state.
+ * @param {string[]} candidates - Candidates discovered from source directory.
+ * @param {null|{path:string,exists:boolean,isKnownExtension:boolean}} changedState - Changed source state.
+ * @param {(state:{path:string,exists:boolean,isKnownExtension:boolean})=>boolean} shouldRebuildAll - Rebuild-all selector.
+ * @returns {string[]} Selected candidates.
+ */
+function selectCandidatesForChangedState(candidates, changedState, shouldRebuildAll = () => false) {
+    if (!changedState || !changedState.isKnownExtension) {
+        return candidates;
+    }
+
+    if (!changedState.exists) {
+        return [];
+    }
+
+    if (shouldRebuildAll(changedState)) {
+        return candidates;
+    }
+
+    return candidates.filter((candidate) => path.resolve(candidate) === changedState.path);
 }
 
 /**
@@ -533,18 +584,7 @@ async function removeStandaloneOutputForDeletedSource(config, sourceType, delete
 
     const relativePath = path.relative(sourceDir, deletedSourcePath);
     const extension = path.extname(deletedSourcePath).toLowerCase();
-
-    if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
-        return 0;
-    }
-
-    let outputRelative = relativePath;
-    if (sourceType === 'css' && extension !== '.css') {
-        outputRelative = replaceExtension(relativePath, '.css');
-    }
-    if (sourceType === 'js') {
-        outputRelative = renderJsOutputPath(relativePath, extension);
-    }
+    const outputRelative = renderOutputPathBySourceType(sourceType, relativePath, extension);
 
     const outputFile = path.resolve(outputDir, outputRelative);
 
@@ -591,6 +631,7 @@ async function runStandaloneHtmlBuild(config, scope, changedOutputs) {
 
     const sourceDir = config.paths.devHtmlDir;
     const outputDir = config.paths.buildHtmlDir;
+    const changedState = resolveChangedCandidateState(config.changedSourcePath, sourceDir, config.languages.html.extensions);
 
     if (!fs.existsSync(sourceDir)) {
         logBuild(config, 'info', `HTML source directory not found (optional, skipped): ${displayPath(config, sourceDir)}`);
@@ -598,19 +639,7 @@ async function runStandaloneHtmlBuild(config, scope, changedOutputs) {
     }
 
     const candidates = await collectCandidates(sourceDir, config.languages.html.extensions);
-    const changedPath = config.changedSourcePath;
-    let selectedCandidates = candidates;
-
-    if (changedPath && isPathInsideOrSame(sourceDir, changedPath)) {
-        const changedExtension = path.extname(changedPath).toLowerCase();
-        if (config.languages.html.extensions.has(changedExtension)) {
-            if (fs.existsSync(changedPath)) {
-                selectedCandidates = candidates.filter((candidate) => path.resolve(candidate) === changedPath);
-            } else {
-                selectedCandidates = [];
-            }
-        }
-    }
+    const selectedCandidates = selectCandidatesForChangedState(candidates, changedState);
 
     let count = 0;
 
@@ -620,13 +649,8 @@ async function runStandaloneHtmlBuild(config, scope, changedOutputs) {
         count += await buildHtmlFile(config, inputFile, outputFile, changedOutputs);
     }
 
-    if (
-        changedPath
-        && isPathInsideOrSame(sourceDir, changedPath)
-        && !fs.existsSync(changedPath)
-        && config.languages.html.extensions.has(path.extname(changedPath).toLowerCase())
-    ) {
-        count += await removeStandaloneOutputForDeletedSource(config, 'html', changedPath, changedOutputs);
+    if (changedState && changedState.isKnownExtension && !changedState.exists) {
+        count += await removeStandaloneOutputForDeletedSource(config, 'html', changedState.path, changedOutputs);
     }
 
     return { count };
@@ -647,6 +671,7 @@ async function runStandaloneCssBuild(config, scope, changedOutputs, cssAssets) {
 
     const sourceDir = config.paths.devCssDir;
     const outputDir = config.paths.buildCssDir;
+    const changedState = resolveChangedCandidateState(config.changedSourcePath, sourceDir, config.languages.sass.extensions);
 
     if (!fs.existsSync(sourceDir)) {
         logBuild(config, 'info', `CSS source directory not found (optional, skipped): ${displayPath(config, sourceDir)}`);
@@ -661,43 +686,22 @@ async function runStandaloneCssBuild(config, scope, changedOutputs, cssAssets) {
         return true;
     });
 
-    const changedPath = config.changedSourcePath;
-    let selectedCandidates = candidates;
-
-    if (changedPath && isPathInsideOrSame(sourceDir, changedPath)) {
-        const changedExtension = path.extname(changedPath).toLowerCase();
-        const isPartial = path.basename(changedPath).startsWith('_');
-
-        if (config.languages.sass.extensions.has(changedExtension)) {
-            if (isPartial) {
-                selectedCandidates = candidates;
-            } else if (fs.existsSync(changedPath)) {
-                selectedCandidates = candidates.filter((candidate) => path.resolve(candidate) === changedPath);
-            } else {
-                selectedCandidates = [];
-            }
-        }
-    }
+    const selectedCandidates = selectCandidatesForChangedState(candidates, changedState, (state) => path.basename(state.path).startsWith('_'));
 
     let count = 0;
 
     for (const inputFile of selectedCandidates) {
         const relativePath = path.relative(sourceDir, inputFile);
         const extension = path.extname(inputFile).toLowerCase();
-        const outputRelativePath = extension === '.css' ? relativePath : replaceExtension(relativePath, '.css');
+        const outputRelativePath = renderOutputPathBySourceType('css', relativePath, extension);
         const outputFile = path.resolve(outputDir, outputRelativePath);
 
         cssAssets.add(outputFile);
         count += await buildCssFile(config, inputFile, outputFile, changedOutputs);
     }
 
-    if (
-        changedPath
-        && isPathInsideOrSame(sourceDir, changedPath)
-        && !fs.existsSync(changedPath)
-        && config.languages.sass.extensions.has(path.extname(changedPath).toLowerCase())
-    ) {
-        count += await removeStandaloneOutputForDeletedSource(config, 'css', changedPath, changedOutputs);
+    if (changedState && changedState.isKnownExtension && !changedState.exists) {
+        count += await removeStandaloneOutputForDeletedSource(config, 'css', changedState.path, changedOutputs);
     }
 
     return { count };
@@ -718,6 +722,7 @@ async function runStandaloneJsBuild(config, scope, changedOutputs, jsAssets) {
 
     const sourceDir = config.paths.devJsDir;
     const outputDir = config.paths.buildJsDir;
+    const changedState = resolveChangedCandidateState(config.changedSourcePath, sourceDir, config.languages.js.extensions);
 
     if (!fs.existsSync(sourceDir)) {
         logBuild(config, 'info', `JS source directory not found (optional, skipped): ${displayPath(config, sourceDir)}`);
@@ -725,39 +730,22 @@ async function runStandaloneJsBuild(config, scope, changedOutputs, jsAssets) {
     }
 
     const candidates = await collectCandidates(sourceDir, config.languages.js.extensions);
-    const changedPath = config.changedSourcePath;
-    let selectedCandidates = candidates;
-
-    if (changedPath && isPathInsideOrSame(sourceDir, changedPath)) {
-        const changedExtension = path.extname(changedPath).toLowerCase();
-        if (config.languages.js.extensions.has(changedExtension)) {
-            if (fs.existsSync(changedPath)) {
-                selectedCandidates = candidates.filter((candidate) => path.resolve(candidate) === changedPath);
-            } else {
-                selectedCandidates = [];
-            }
-        }
-    }
+    const selectedCandidates = selectCandidatesForChangedState(candidates, changedState);
 
     let count = 0;
 
     for (const inputFile of selectedCandidates) {
         const relativePath = path.relative(sourceDir, inputFile);
         const extension = path.extname(inputFile).toLowerCase();
-        const outputRelativePath = renderJsOutputPath(relativePath, extension);
+        const outputRelativePath = renderOutputPathBySourceType('js', relativePath, extension);
         const outputFile = path.resolve(outputDir, outputRelativePath);
 
         jsAssets.add(outputFile);
         count += await buildJsFile(config, inputFile, outputFile, changedOutputs);
     }
 
-    if (
-        changedPath
-        && isPathInsideOrSame(sourceDir, changedPath)
-        && !fs.existsSync(changedPath)
-        && config.languages.js.extensions.has(path.extname(changedPath).toLowerCase())
-    ) {
-        count += await removeStandaloneOutputForDeletedSource(config, 'js', changedPath, changedOutputs);
+    if (changedState && changedState.isKnownExtension && !changedState.exists) {
+        count += await removeStandaloneOutputForDeletedSource(config, 'js', changedState.path, changedOutputs);
     }
 
     return { count };
@@ -814,24 +802,11 @@ async function runModulesBuild(config, scope, changedOutputs) {
     ]);
 
     const candidates = await collectCandidates(sourceDir, allowedExtensions);
-    const changedPath = config.changedSourcePath;
-    let selectedCandidates = candidates;
-
-    if (changedPath && isPathInsideOrSame(sourceDir, changedPath)) {
-        const changedExtension = path.extname(changedPath).toLowerCase();
-        const changedType = inferModuleSourceType(config, changedPath);
-        const isSassPartial = (changedExtension === '.scss' || changedExtension === '.sass') && path.basename(changedPath).startsWith('_');
-
-        if (changedType === 'css' && isSassPartial) {
-            selectedCandidates = candidates.filter((candidate) => inferModuleSourceType(config, candidate) === 'css');
-        } else if (allowedExtensions.has(changedExtension)) {
-            if (fs.existsSync(changedPath)) {
-                selectedCandidates = candidates.filter((candidate) => path.resolve(candidate) === changedPath);
-            } else {
-                selectedCandidates = [];
-            }
-        }
-    }
+    const changedState = resolveChangedCandidateState(config.changedSourcePath, sourceDir, allowedExtensions);
+    const selectedCandidates = selectCandidatesForChangedState(candidates, changedState, (state) => {
+        const isSassPartial = (state.extension === '.scss' || state.extension === '.sass') && path.basename(state.path).startsWith('_');
+        return inferModuleSourceType(config, state.path) === 'css' && isSassPartial;
+    });
 
     let count = 0;
 
@@ -855,32 +830,23 @@ async function runModulesBuild(config, scope, changedOutputs) {
                 continue;
             }
 
-            const outputRelativePath = extension === '.css' ? relativePath : replaceExtension(relativePath, '.css');
+            const outputRelativePath = renderOutputPathBySourceType('css', relativePath, extension);
             const outputFile = path.resolve(outputDir, outputRelativePath);
             count += await buildCssFile(config, inputFile, outputFile, changedOutputs);
             continue;
         }
 
         const sourceExtension = path.extname(inputFile).toLowerCase();
-        const outputRelativePath = renderJsOutputPath(relativePath, sourceExtension);
+        const outputRelativePath = renderOutputPathBySourceType('js', relativePath, sourceExtension);
         const outputFile = path.resolve(outputDir, outputRelativePath);
         count += await buildJsFile(config, inputFile, outputFile, changedOutputs);
     }
 
-    if (changedPath && isPathInsideOrSame(sourceDir, changedPath) && !fs.existsSync(changedPath)) {
-        const deletedType = inferModuleSourceType(config, changedPath);
+    if (changedState && changedState.isKnownExtension && !changedState.exists) {
+        const deletedType = inferModuleSourceType(config, changedState.path);
         if (deletedType) {
-            const relativePath = path.relative(sourceDir, changedPath);
-            let outputRelativePath = relativePath;
-
-            if (deletedType === 'css' && path.extname(changedPath).toLowerCase() !== '.css') {
-                outputRelativePath = replaceExtension(relativePath, '.css');
-            }
-
-            if (deletedType === 'js') {
-                outputRelativePath = renderJsOutputPath(relativePath, path.extname(changedPath).toLowerCase());
-            }
-
+            const relativePath = path.relative(sourceDir, changedState.path);
+            const outputRelativePath = renderOutputPathBySourceType(deletedType, relativePath, changedState.extension);
             const outputFile = path.resolve(outputDir, outputRelativePath);
             const removedOutput = await removeFileIfExists(outputFile);
             if (removedOutput) {
@@ -904,12 +870,11 @@ async function runModulesBuild(config, scope, changedOutputs) {
 /**
  * Export one CSS output as an inline HTML wrapper.
  * @param {string} outputFile - CSS output path.
- * @param {any} config - Normalized build config.
  * @returns {Promise<boolean>} True when wrapper content changed.
  */
-async function exportCssAsHtml(outputFile, config) {
+async function exportCssAsHtml(outputFile) {
     const htmlFile = replaceExtension(outputFile, '.html');
-    const cssText = String((await fsPromises.readFile(outputFile, 'utf8')) || '').trim();
+    const cssText = await readTextFileTrimmed(outputFile);
     const htmlText = `<style>\n${cssText}\n</style>\n`;
     return writeTextFileIfChanged(htmlFile, htmlText);
 }
@@ -917,16 +882,45 @@ async function exportCssAsHtml(outputFile, config) {
 /**
  * Export one JS output as an inline HTML wrapper.
  * @param {string} outputFile - JS output path.
- * @param {any} config - Normalized build config.
  * @returns {Promise<boolean>} True when wrapper content changed.
  */
-async function exportJsAsHtml(outputFile, config) {
+async function exportJsAsHtml(outputFile) {
     const htmlFile = replaceExtension(outputFile, '.html');
-    const jsText = String((await fsPromises.readFile(outputFile, 'utf8')) || '').trim();
+    const jsText = await readTextFileTrimmed(outputFile);
     const isModule = outputFile.toLowerCase().endsWith('.mjs') || outputFile.toLowerCase().endsWith('.module.js');
     const typeAttribute = isModule ? ' type="module"' : '';
     const htmlText = `<script${typeAttribute}>\n${escapeInlineScriptContent(jsText)}\n</script>\n`;
     return writeTextFileIfChanged(htmlFile, htmlText);
+}
+
+/**
+ * Export HTML wrappers for one language output set.
+ * @param {any} config - Normalized build config.
+ * @param {Set<string>} assets - Build output assets.
+ * @param {(outputFile:string)=>Promise<boolean>} exporter - Per-file HTML exporter.
+ * @param {Set<string>} changedOutputs - Mutable set of changed output files.
+ * @returns {Promise<number>} Number of changed wrapper files.
+ */
+async function runAssetHtmlExport(config, assets, exporter, changedOutputs) {
+    let count = 0;
+
+    for (const outputFile of Array.from(assets).sort()) {
+        if (!fs.existsSync(outputFile)) {
+            continue;
+        }
+
+        const changed = await exporter(outputFile);
+        if (!changed) {
+            continue;
+        }
+
+        const wrapperFile = replaceExtension(outputFile, '.html');
+        changedOutputs.add(wrapperFile);
+        count += 1;
+        logBuild(config, 'success', `HTML exported: ${displayPathPair(config, outputFile, wrapperFile)}`);
+    }
+
+    return count;
 }
 
 /**
@@ -942,50 +936,17 @@ async function runExportHtml(config, cssAssets, jsAssets, changedOutputs) {
         return 0;
     }
 
-    let count = 0;
-
-    for (const cssOutput of Array.from(cssAssets).sort()) {
-        if (!fs.existsSync(cssOutput)) {
-            continue;
-        }
-
-        const changed = await exportCssAsHtml(cssOutput, config);
-        if (!changed) {
-            continue;
-        }
-
-        const wrapperFile = replaceExtension(cssOutput, '.html');
-        changedOutputs.add(wrapperFile);
-        count += 1;
-        logBuild(config, 'success', `HTML exported: ${displayPathPair(config, cssOutput, wrapperFile)}`);
-    }
-
-    for (const jsOutput of Array.from(jsAssets).sort()) {
-        if (!fs.existsSync(jsOutput)) {
-            continue;
-        }
-
-        const changed = await exportJsAsHtml(jsOutput, config);
-        if (!changed) {
-            continue;
-        }
-
-        const wrapperFile = replaceExtension(jsOutput, '.html');
-        changedOutputs.add(wrapperFile);
-        count += 1;
-        logBuild(config, 'success', `HTML exported: ${displayPathPair(config, jsOutput, wrapperFile)}`);
-    }
-
-    return count;
+    const cssCount = await runAssetHtmlExport(config, cssAssets, exportCssAsHtml, changedOutputs);
+    const jsCount = await runAssetHtmlExport(config, jsAssets, exportJsAsHtml, changedOutputs);
+    return cssCount + jsCount;
 }
 
 /**
- * Group html files by basename and keep the first file per type for deterministic merge.
+ * Group HTML files by basename and keep the first file for deterministic merge.
  * @param {string} rootDir - Source root directory.
- * @param {"html"|"css"|"js"} type - Source group type.
- * @returns {Promise<Map<string, {html?:string,css?:string,js?:string}>>} Merge group map.
+ * @returns {Promise<Map<string, string>>} Basename -> absolute file path map.
  */
-async function collectHtmlMergeGroups(rootDir, type) {
+async function collectFirstHtmlByBasename(rootDir) {
     const map = new Map();
 
     if (!fs.existsSync(rootDir)) {
@@ -996,10 +957,8 @@ async function collectHtmlMergeGroups(rootDir, type) {
 
     for (const filePath of files) {
         const key = path.basename(filePath);
-        const existing = map.get(key) || {};
-        if (!existing[type]) {
-            existing[type] = filePath;
-            map.set(key, existing);
+        if (!map.has(key)) {
+            map.set(key, filePath);
         }
     }
 
@@ -1016,44 +975,12 @@ function escapeInlineScriptContent(sourceText) {
 }
 
 /**
- * Resolve merged HTML part content by type so merge output is fully inlined.
- * @param {"html"|"css"|"js"} type - Merge part type.
- * @param {string} htmlFilePath - HTML source path selected for this part.
+ * Resolve merged HTML part content from one exported HTML fragment file.
+ * @param {string} htmlFilePath - HTML source path selected for merge.
  * @returns {Promise<string>} Part content ready for final concatenation.
  */
-async function resolveMergedPartContent(type, htmlFilePath) {
-    if (type === 'html') {
-        return String((await fsPromises.readFile(htmlFilePath, 'utf8')) || '').trim();
-    }
-
-    if (type === 'css') {
-        const cssFilePath = replaceExtension(htmlFilePath, '.css');
-        if (!fs.existsSync(cssFilePath)) {
-            return String((await fsPromises.readFile(htmlFilePath, 'utf8')) || '').trim();
-        }
-
-        const cssText = String((await fsPromises.readFile(cssFilePath, 'utf8')) || '').trim();
-        if (!cssText) {
-            return '';
-        }
-
-        return `<style>\n${cssText}\n</style>`;
-    }
-
-    const jsCandidates = [replaceExtension(htmlFilePath, '.js'), replaceExtension(htmlFilePath, '.mjs')];
-    const jsFilePath = jsCandidates.find((candidate) => fs.existsSync(candidate));
-    if (!jsFilePath) {
-        return String((await fsPromises.readFile(htmlFilePath, 'utf8')) || '').trim();
-    }
-
-    const jsText = String((await fsPromises.readFile(jsFilePath, 'utf8')) || '').trim();
-    if (!jsText) {
-        return '';
-    }
-
-    const isModule = jsFilePath.toLowerCase().endsWith('.mjs') || jsFilePath.toLowerCase().endsWith('.module.js');
-    const typeAttribute = isModule ? ' type="module"' : '';
-    return `<script${typeAttribute}>\n${escapeInlineScriptContent(jsText)}\n</script>`;
+async function resolveMergedPartContent(htmlFilePath) {
+    return readTextFileTrimmed(htmlFilePath);
 }
 
 /**
@@ -1063,7 +990,7 @@ async function resolveMergedPartContent(type, htmlFilePath) {
  * @returns {Promise<string>} Inline-ready content.
  */
 async function resolveInlineModulePartContent(type, absoluteFilePath) {
-    const sourceText = String((await fsPromises.readFile(absoluteFilePath, 'utf8')) || '').trim();
+    const sourceText = await readTextFileTrimmed(absoluteFilePath);
     if (!sourceText) {
         return '';
     }
@@ -1091,22 +1018,40 @@ async function resolveInlineModulePartContent(type, absoluteFilePath) {
  */
 async function mergeOneModuleDirectory(config, moduleDirPath, moduleName, changedOutputs) {
     const moduleFiles = (await walkDirectory(moduleDirPath)).sort();
+    const groupedFiles = { html: [], css: [], js: [] };
 
-    const htmlFiles = moduleFiles.filter((filePath) => path.extname(filePath).toLowerCase() === '.html');
-    const cssFiles = moduleFiles.filter((filePath) => path.extname(filePath).toLowerCase() === '.css');
-    const jsFiles = moduleFiles.filter((filePath) => {
+    for (const filePath of moduleFiles) {
         const extension = path.extname(filePath).toLowerCase();
-        return extension === '.js' || extension === '.mjs';
-    });
 
-    const mergeableFileCount = htmlFiles.length + cssFiles.length + jsFiles.length;
-    const mergedParts = [
-        ...(await Promise.all(htmlFiles.map((filePath) => resolveInlineModulePartContent('html', filePath)))),
-        ...(await Promise.all(cssFiles.map((filePath) => resolveInlineModulePartContent('css', filePath)))),
-        ...(await Promise.all(jsFiles.map((filePath) => resolveInlineModulePartContent('js', filePath)))),
-    ]
-        .map((entry) => String(entry || '').trim())
-        .filter(Boolean);
+        if (extension === '.html') {
+            groupedFiles.html.push(filePath);
+            continue;
+        }
+
+        if (extension === '.css') {
+            groupedFiles.css.push(filePath);
+            continue;
+        }
+
+        if (extension === '.js' || extension === '.mjs') {
+            groupedFiles.js.push(filePath);
+        }
+    }
+
+    const mergeableFileCount = groupedFiles.html.length + groupedFiles.css.length + groupedFiles.js.length;
+    const mergedParts = [];
+    for (const [type, files] of [
+        ['html', groupedFiles.html],
+        ['css', groupedFiles.css],
+        ['js', groupedFiles.js],
+    ]) {
+        for (const filePath of files) {
+            const part = await resolveInlineModulePartContent(type, filePath);
+            if (part) {
+                mergedParts.push(part);
+            }
+        }
+    }
 
     const moduleMergeOutputFile = path.resolve(config.paths.buildModulesDir, `${moduleName}.html`);
     if (mergeableFileCount === 0) {
@@ -1195,39 +1140,34 @@ async function runMergeSameName(config, changedOutputs) {
         return 0;
     }
 
-    const htmlGroups = await collectHtmlMergeGroups(config.paths.buildHtmlDir, 'html');
-    const cssGroups = await collectHtmlMergeGroups(config.paths.buildCssDir, 'css');
-    const jsGroups = await collectHtmlMergeGroups(config.paths.buildJsDir, 'js');
+    const htmlGroups = await collectFirstHtmlByBasename(config.paths.buildHtmlDir);
+    const cssGroups = await collectFirstHtmlByBasename(config.paths.buildCssDir);
+    const jsGroups = await collectFirstHtmlByBasename(config.paths.buildJsDir);
 
     const allNames = new Set([...htmlGroups.keys(), ...cssGroups.keys(), ...jsGroups.keys()]);
-
-    await fsPromises.rm(config.paths.buildMergeDir, { recursive: true, force: true });
+    await fsPromises.mkdir(config.paths.buildMergeDir, { recursive: true });
+    const expectedOutputs = new Set();
 
     let count = 0;
 
     for (const name of Array.from(allNames).sort()) {
-        const parts = {
-            html: (htmlGroups.get(name) || {}).html,
-            css: (cssGroups.get(name) || {}).css,
-            js: (jsGroups.get(name) || {}).js,
-        };
-
         const orderedParts = [
-            { type: 'html', filePath: parts.html },
-            { type: 'css', filePath: parts.css },
-            { type: 'js', filePath: parts.js },
+            { type: 'html', filePath: htmlGroups.get(name) },
+            { type: 'css', filePath: cssGroups.get(name) },
+            { type: 'js', filePath: jsGroups.get(name) },
         ].filter((part) => Boolean(part.filePath));
 
         if (orderedParts.length < 2) {
             continue;
         }
 
-        const mergedText = `${(await Promise.all(orderedParts.map((part) => resolveMergedPartContent(part.type, part.filePath))))
+        const mergedText = `${(await Promise.all(orderedParts.map((part) => resolveMergedPartContent(part.filePath))))
             .map((entry) => String(entry || '').trim())
             .filter(Boolean)
             .join('\n\n')}\n`;
 
         const outputFile = path.resolve(config.paths.buildMergeDir, name);
+        expectedOutputs.add(outputFile);
         const changed = await writeTextFileIfChanged(outputFile, mergedText);
         if (!changed) {
             continue;
@@ -1238,6 +1178,22 @@ async function runMergeSameName(config, changedOutputs) {
 
         const sourceLabel = orderedParts.map((part) => displayPath(config, part.filePath)).join(' + ');
         logBuild(config, 'success', `HTML merged: ${sourceLabel} -> ${displayPath(config, outputFile)}`);
+    }
+
+    const existingMergeFiles = await walkDirectory(config.paths.buildMergeDir);
+    for (const filePath of existingMergeFiles) {
+        if (path.extname(filePath).toLowerCase() !== '.html' || expectedOutputs.has(filePath)) {
+            continue;
+        }
+
+        const removed = await removeFileIfExists(filePath);
+        if (!removed) {
+            continue;
+        }
+
+        changedOutputs.add(filePath);
+        count += 1;
+        logBuild(config, 'warn', `HTML merge removed (stale): ${displayPath(config, filePath)}`);
     }
 
     return count;
@@ -1322,14 +1278,14 @@ async function exportOutputFileAsHtml(normalizedConfig, outputFilePath) {
     const changedOutputs = new Set();
 
     if (isPathInsideOrSame(config.paths.buildCssDir, absolutePath) && path.extname(absolutePath).toLowerCase() === '.css') {
-        const changed = await exportCssAsHtml(absolutePath, config);
+        const changed = await exportCssAsHtml(absolutePath);
         if (changed) {
             changedOutputs.add(replaceExtension(absolutePath, '.html'));
         }
     }
 
     if (isPathInsideOrSame(config.paths.buildJsDir, absolutePath) && ['.js', '.mjs'].includes(path.extname(absolutePath).toLowerCase())) {
-        const changed = await exportJsAsHtml(absolutePath, config);
+        const changed = await exportJsAsHtml(absolutePath);
         if (changed) {
             changedOutputs.add(replaceExtension(absolutePath, '.html'));
         }

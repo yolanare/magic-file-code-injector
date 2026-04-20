@@ -1,6 +1,16 @@
 const path = require('node:path');
 
 /**
+ * Resolve relative relationship once to avoid recomputing absolute paths in inclusion checks.
+ * @param {string} basePath - Base directory.
+ * @param {string} targetPath - Candidate path.
+ * @returns {string} Relative path from base to target.
+ */
+function resolveRelativePath(basePath, targetPath) {
+    return path.relative(path.resolve(basePath), path.resolve(targetPath));
+}
+
+/**
  * Validate and normalize a port value to avoid invalid runtime binding.
  * @param {any} value - Raw port candidate.
  * @param {number} fallbackPort - Port used when value is invalid.
@@ -20,7 +30,7 @@ function normalizePort(value, fallbackPort) {
  * @returns {string} Path with POSIX separators.
  */
 function toForwardSlashes(value) {
-    return String(value || '')
+    return String(value ?? '')
         .split(path.sep)
         .join('/');
 }
@@ -31,17 +41,13 @@ function toForwardSlashes(value) {
  * @returns {"html"|"css"|"js"|"asset"} Reload category.
  */
 function inferReloadType(filePath) {
-    const extension = path.extname(String(filePath || '')).toLowerCase();
-    if (extension === '.html') {
-        return 'html';
-    }
-    if (extension === '.css') {
-        return 'css';
-    }
-    if (extension === '.js' || extension === '.mjs') {
-        return 'js';
-    }
-    return 'asset';
+    const extension = path.extname(String(filePath ?? '')).toLowerCase();
+    return (
+        extension === '.html' ? 'html'
+        : extension === '.css' ? 'css'
+        : extension === '.js' || extension === '.mjs' ? 'js'
+        : 'asset'
+    );
 }
 
 /**
@@ -51,7 +57,7 @@ function inferReloadType(filePath) {
  * @returns {boolean} True when target is strictly inside base.
  */
 function isPathInside(basePath, targetPath) {
-    const relativePath = path.relative(path.resolve(basePath), path.resolve(targetPath));
+    const relativePath = resolveRelativePath(basePath, targetPath);
     return relativePath !== '' && !relativePath.startsWith('..') && !path.isAbsolute(relativePath);
 }
 
@@ -62,7 +68,7 @@ function isPathInside(basePath, targetPath) {
  * @returns {boolean} True when target equals or is inside base.
  */
 function isPathInsideOrSame(basePath, targetPath) {
-    const relativePath = path.relative(path.resolve(basePath), path.resolve(targetPath));
+    const relativePath = resolveRelativePath(basePath, targetPath);
     return relativePath === '' || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath));
 }
 

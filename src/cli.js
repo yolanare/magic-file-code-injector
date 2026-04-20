@@ -26,6 +26,11 @@ Options:
  * @returns {object} Parsed command-line options.
  */
 function parseArgs(argv) {
+    const takeOptionValue = (index, fallback = '') => {
+        const value = argv[index + 1];
+        return [typeof value === 'string' && value.length > 0 ? value : fallback, index + 1];
+    };
+
     const parsed = {
         configPath: DEFAULT_CONFIG_FILE,
         host: '',
@@ -36,28 +41,31 @@ function parseArgs(argv) {
     for (let index = 0; index < argv.length; index += 1) {
         const arg = argv[index];
 
-        if (arg === '--help' || arg === '-h') {
-            parsed.help = true;
-            continue;
-        }
-
-        if (arg === '--config') {
-            parsed.configPath = argv[index + 1] || parsed.configPath;
-            index += 1;
-            continue;
-        }
-
-        if (arg === '--host') {
-            parsed.host = argv[index + 1] || '';
-            index += 1;
-            continue;
-        }
-
-        if (arg === '--port') {
-            const rawPort = argv[index + 1];
-            parsed.port = rawPort ? Number(rawPort) : null;
-            index += 1;
-            continue;
+        switch (arg) {
+            case '--help':
+            case '-h':
+                parsed.help = true;
+                break;
+            case '--config': {
+                const [configPath, nextIndex] = takeOptionValue(index, parsed.configPath);
+                parsed.configPath = configPath;
+                index = nextIndex;
+                break;
+            }
+            case '--host': {
+                const [host, nextIndex] = takeOptionValue(index, '');
+                parsed.host = host;
+                index = nextIndex;
+                break;
+            }
+            case '--port': {
+                const [rawPort, nextIndex] = takeOptionValue(index, '');
+                parsed.port = rawPort ? Number(rawPort) : null;
+                index = nextIndex;
+                break;
+            }
+            default:
+                break;
         }
     }
 

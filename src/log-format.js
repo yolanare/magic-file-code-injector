@@ -52,7 +52,9 @@ function applyStyle(value, ansiCode, enabled) {
  * @returns {string} Path using forward slashes.
  */
 function toPosixPath(value) {
-    return String(value || '').split(path.sep).join('/');
+    return String(value ?? '')
+        .split(path.sep)
+        .join('/');
 }
 
 /**
@@ -63,7 +65,7 @@ function toPosixPath(value) {
  */
 function formatPath(value, options = {}) {
     const useColor = typeof options.useColor === 'boolean' ? options.useColor : supportsColor();
-    return applyStyle(toPosixPath(String(value || '')), ANSI.gray, useColor);
+    return applyStyle(toPosixPath(value), ANSI.gray, useColor);
 }
 
 /**
