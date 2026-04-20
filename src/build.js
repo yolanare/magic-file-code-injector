@@ -776,7 +776,80 @@ function inferModuleSourceType(config, absolutePath) {
 }
 
 /**
- * Build module files from `dev/modules` into `build/modules`, preserving full relative structure.
+ * Resolve module metadata from one source path under `dev/modules`.
+ * @param {string} sourceDir - Modules source root directory.
+ * @param {string} absolutePath - Absolute module source path.
+ * @returns {null|{moduleName:string,moduleRelativePath:string,extension:string}} Module metadata.
+ */
+function resolveModuleSourceMeta(sourceDir, absolutePath) {
+    const relativePath = toForwardSlashes(path.relative(sourceDir, absolutePath));
+    const parts = relativePath.split('/').filter(Boolean);
+    if (parts.length < 2) {
+        return null;
+    }
+
+    return {
+        moduleName: parts[0],
+        moduleRelativePath: parts.slice(1).join('/'),
+        extension: path.extname(absolutePath).toLowerCase(),
+    };
+}
+
+/**
+ * Resolve one module output path by source file type and module metadata.
+ * @param {any} config - Normalized build config.
+ * @param {string} sourceDir - Modules source root directory.
+ * @param {string} absolutePath - Absolute module source path.
+ * @param {"html"|"css"|"js"} sourceType - Resolved module source type.
+ * @returns {string} Absolute module output file path.
+ */
+function resolveModuleOutputFilePath(config, sourceDir, absolutePath, sourceType) {
+    const meta = resolveModuleSourceMeta(sourceDir, absolutePath);
+    if (!meta) {
+        return '';
+    }
+
+    const outputRelativePath = renderOutputPathBySourceType(sourceType, meta.moduleRelativePath, meta.extension);
+    return path.resolve(config.paths.buildModulesDir, meta.moduleName, sourceType, outputRelativePath);
+}
+
+/**
+ * Remove stale module outputs that no longer map to active module sources.
+ * @param {any} config - Normalized build config.
+ * @param {Set<string>} expectedFiles - Expected module output files.
+ * @param {Set<string>} changedOutputs - Mutable set of changed output files.
+ * @returns {Promise<number>} Number of removed stale files.
+ */
+async function removeStaleModuleOutputs(config, expectedFiles, changedOutputs) {
+    if (!fs.existsSync(config.paths.buildModulesDir)) {
+        return 0;
+    }
+
+    const moduleFiles = await walkDirectory(config.paths.buildModulesDir);
+    let removedCount = 0;
+
+    for (const filePath of moduleFiles.sort()) {
+        const isTopLevelModuleMerge =
+            path.dirname(filePath) === config.paths.buildModulesDir && path.extname(filePath).toLowerCase() === '.html';
+        if (isTopLevelModuleMerge || expectedFiles.has(filePath)) {
+            continue;
+        }
+
+        const removed = await removeFileIfExists(filePath);
+        if (!removed) {
+            continue;
+        }
+
+        changedOutputs.add(filePath);
+        removedCount += 1;
+        logBuild(config, 'warn', `Module output removed (stale): ${displayPath(config, filePath)}`);
+    }
+
+    return removedCount;
+}
+
+/**
+ * Build module files from `dev/modules` into `build/modules/<module>/<type>/...`.
  * @param {any} config - Normalized build config.
  * @param {any} scope - Resolved build scope.
  * @param {Set<string>} changedOutputs - Mutable set of changed output files.
@@ -788,7 +861,6 @@ async function runModulesBuild(config, scope, changedOutputs) {
     }
 
     const sourceDir = config.paths.devModulesDir;
-    const outputDir = config.paths.buildModulesDir;
 
     if (!fs.existsSync(sourceDir)) {
         logBuild(config, 'info', `Modules directory not found (optional, skipped): ${displayPath(config, sourceDir)}`);
@@ -807,8 +879,45 @@ async function runModulesBuild(config, scope, changedOutputs) {
         const isSassPartial = (state.extension === '.scss' || state.extension === '.sass') && path.basename(state.path).startsWith('_');
         return inferModuleSourceType(config, state.path) === 'css' && isSassPartial;
     });
+    const moduleCssAssets = new Set();
+    const moduleJsAssets = new Set();
+    const expectedModuleOutputs = new Set();
 
     let count = 0;
+
+    for (const inputFile of candidates) {
+        const fileType = inferModuleSourceType(config, inputFile);
+        if (!fileType) {
+            continue;
+        }
+
+        const sourceExtension = path.extname(inputFile).toLowerCase();
+        const isSassPartial = (sourceExtension === '.scss' || sourceExtension === '.sass') && path.basename(inputFile).startsWith('_');
+        if (fileType === 'css' && isSassPartial) {
+            continue;
+        }
+
+        const outputFile = resolveModuleOutputFilePath(config, sourceDir, inputFile, fileType);
+        if (!outputFile) {
+            continue;
+        }
+
+        expectedModuleOutputs.add(outputFile);
+
+        if (fileType === 'css') {
+            moduleCssAssets.add(outputFile);
+            expectedModuleOutputs.add(replaceExtension(outputFile, '.html'));
+
+            if (config.languages.sass.settings.sourceMap && (sourceExtension === '.scss' || sourceExtension === '.sass')) {
+                expectedModuleOutputs.add(`${outputFile}.map`);
+            }
+        }
+
+        if (fileType === 'js') {
+            moduleJsAssets.add(outputFile);
+            expectedModuleOutputs.add(replaceExtension(outputFile, '.html'));
+        }
+    }
 
     for (const inputFile of selectedCandidates) {
         const fileType = inferModuleSourceType(config, inputFile);
@@ -816,10 +925,13 @@ async function runModulesBuild(config, scope, changedOutputs) {
             continue;
         }
 
-        const relativePath = path.relative(sourceDir, inputFile);
+        const outputFile = resolveModuleOutputFilePath(config, sourceDir, inputFile, fileType);
+        if (!outputFile) {
+            logBuild(config, 'warn', `Module source ignored (must be inside one module folder): ${displayPath(config, inputFile)}`);
+            continue;
+        }
 
         if (fileType === 'html') {
-            const outputFile = path.resolve(outputDir, relativePath);
             count += await buildHtmlFile(config, inputFile, outputFile, changedOutputs);
             continue;
         }
@@ -830,39 +942,16 @@ async function runModulesBuild(config, scope, changedOutputs) {
                 continue;
             }
 
-            const outputRelativePath = renderOutputPathBySourceType('css', relativePath, extension);
-            const outputFile = path.resolve(outputDir, outputRelativePath);
             count += await buildCssFile(config, inputFile, outputFile, changedOutputs);
             continue;
         }
 
-        const sourceExtension = path.extname(inputFile).toLowerCase();
-        const outputRelativePath = renderOutputPathBySourceType('js', relativePath, sourceExtension);
-        const outputFile = path.resolve(outputDir, outputRelativePath);
         count += await buildJsFile(config, inputFile, outputFile, changedOutputs);
     }
 
-    if (changedState && changedState.isKnownExtension && !changedState.exists) {
-        const deletedType = inferModuleSourceType(config, changedState.path);
-        if (deletedType) {
-            const relativePath = path.relative(sourceDir, changedState.path);
-            const outputRelativePath = renderOutputPathBySourceType(deletedType, relativePath, changedState.extension);
-            const outputFile = path.resolve(outputDir, outputRelativePath);
-            const removedOutput = await removeFileIfExists(outputFile);
-            if (removedOutput) {
-                changedOutputs.add(outputFile);
-                count += 1;
-                logBuild(config, 'warn', `Module output removed (source deleted): ${displayPath(config, outputFile)}`);
-            }
-
-            if (deletedType === 'css') {
-                const removedMap = await removeFileIfExists(`${outputFile}.map`);
-                if (removedMap) {
-                    count += 1;
-                }
-            }
-        }
-    }
+    count += await runAssetHtmlExport(config, moduleCssAssets, exportCssAsHtml, changedOutputs);
+    count += await runAssetHtmlExport(config, moduleJsAssets, exportJsAsHtml, changedOutputs);
+    count += await removeStaleModuleOutputs(config, expectedModuleOutputs, changedOutputs);
 
     return { count };
 }
@@ -1017,26 +1106,24 @@ async function resolveInlineModulePartContent(type, absoluteFilePath) {
  * @returns {Promise<number>} Number of changed files.
  */
 async function mergeOneModuleDirectory(config, moduleDirPath, moduleName, changedOutputs) {
-    const moduleFiles = (await walkDirectory(moduleDirPath)).sort();
-    const groupedFiles = { html: [], css: [], js: [] };
+    const htmlDir = path.resolve(moduleDirPath, 'html');
+    const cssDir = path.resolve(moduleDirPath, 'css');
+    const jsDir = path.resolve(moduleDirPath, 'js');
 
-    for (const filePath of moduleFiles) {
-        const extension = path.extname(filePath).toLowerCase();
-
-        if (extension === '.html') {
-            groupedFiles.html.push(filePath);
-            continue;
-        }
-
-        if (extension === '.css') {
-            groupedFiles.css.push(filePath);
-            continue;
-        }
-
-        if (extension === '.js' || extension === '.mjs') {
-            groupedFiles.js.push(filePath);
-        }
-    }
+    const groupedFiles = {
+        html:
+            fs.existsSync(htmlDir) ?
+                (await walkDirectory(htmlDir)).filter((filePath) => path.extname(filePath).toLowerCase() === '.html').sort()
+            :   [],
+        css:
+            fs.existsSync(cssDir) ?
+                (await walkDirectory(cssDir)).filter((filePath) => path.extname(filePath).toLowerCase() === '.css').sort()
+            :   [],
+        js:
+            fs.existsSync(jsDir) ?
+                (await walkDirectory(jsDir)).filter((filePath) => ['.js', '.mjs'].includes(path.extname(filePath).toLowerCase())).sort()
+            :   [],
+    };
 
     const mergeableFileCount = groupedFiles.html.length + groupedFiles.css.length + groupedFiles.js.length;
     const mergedParts = [];
