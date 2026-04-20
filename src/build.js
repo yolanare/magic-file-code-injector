@@ -332,6 +332,22 @@ function renderOutputPathBySourceType(sourceType, relativePath, sourceExtension)
 }
 
 /**
+ * Keep plain JS files byte-close to source when no transform mode is requested.
+ * @param {any} config - Normalized build config.
+ * @param {string} inputFile - Source JS-like file path.
+ * @returns {boolean} True when the file should be copied without esbuild transform.
+ */
+function shouldCopyJsAsIs(config, inputFile) {
+    const extension = path.extname(inputFile).toLowerCase();
+    const isVanillaJs = extension === '.js' || extension === '.mjs';
+    if (!isVanillaJs) {
+        return false;
+    }
+
+    return !config.languages.js.settings.bundle && !config.languages.js.settings.minify && !config.languages.js.settings.sourcemap;
+}
+
+/**
  * Derive one build execution scope from the changed source path.
  * @param {any} config - Normalized build config.
  * @returns {{standaloneHtml:boolean,standaloneCss:boolean,standaloneJs:boolean,modules:boolean}} Build scope.
@@ -519,6 +535,18 @@ async function buildCssFile(config, inputFile, outputFile, changedOutputs) {
  * @returns {Promise<number>} Number of changed output files.
  */
 async function buildJsFile(config, inputFile, outputFile, changedOutputs) {
+    if (shouldCopyJsAsIs(config, inputFile)) {
+        const sourceText = await fsPromises.readFile(inputFile, 'utf8');
+        const changed = await writeTextFileIfChanged(outputFile, sourceText);
+        if (!changed) {
+            return 0;
+        }
+
+        changedOutputs.add(outputFile);
+        logBuild(config, 'success', `JS copied: ${displayPathPair(config, inputFile, outputFile)}`);
+        return 1;
+    }
+
     await ensureParentDirectory(outputFile);
 
     const result = await esbuild.build({

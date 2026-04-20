@@ -112,6 +112,7 @@ Create your project config (`mfci.config.cjs`) from this template and override o
 | `build.languages.js.settings.bundle` | `boolean` | `false` | Enables esbuild bundling mode. |
 | `build.languages.js.settings.minify` | `boolean` | `false` | Enables esbuild minification. |
 | `build.languages.js.settings.sourcemap` | `boolean` | `false` | Enables esbuild source maps. |
+| `build.languages.js` (default mode) | behavior | `bundle=false`, `minify=false`, `sourcemap=false` | Plain `.js`/`.mjs` files are copied as-is (no transformation) to stay as close as possible to source code. |
 | `build.languages.js.settings.target` | `string` | `'es2020'` | JavaScript target passed to esbuild. |
 | `build.languages.js.settings.format` | `string` | `'esm'` | Output format passed to esbuild. |
 | `build.languages.js.settings.platform` | `string` | `'browser'` | Build platform passed to esbuild. |
