@@ -28,6 +28,7 @@ let reconnectUntil = 0;
 let connectionLossLogged = false;
 let hasConnectedAtLeastOnce = false;
 let reconnectSuspended = false;
+let keepaliveRecoveryLastAttemptAt = 0;
 
 const LR_PROTOCOLS = [
   "http://livereload.com/protocols/official-7",
@@ -36,6 +37,7 @@ const LR_PROTOCOLS = [
 ];
 const RECONNECT_INTERVAL_MS = 2000;
 const RECONNECT_WINDOW_MS = 20000;
+const KEEPALIVE_RECOVERY_COOLDOWN_MS = 30000;
 const SOCKET_EVENT_BATCH_WINDOW_MS = 150;
 
 let pendingSocketEvents = [];
@@ -500,10 +502,7 @@ function logConnectionLoss(reason) {
   }
 
   connectionLossLogged = true;
-  logToBrowserConsole(
-    "warn",
-    `[mfci] WebSocket connection lost (${reason}). Retrying every ${RECONNECT_INTERVAL_MS / 1000}s for up to 20s.`
-  );
+  logToBrowserConsole("warn", `[mfci] WebSocket connection lost (${reason}). Retrying every ${RECONNECT_INTERVAL_MS / 1000}s.`);
 }
 
 /**
@@ -532,7 +531,7 @@ function logToBrowserConsole(level, message) {
 }
 
 /**
- * Retry WebSocket connection at regular intervals for a fixed time window.
+ * Retry WebSocket connection at regular intervals until connection is restored.
  * @returns {void} Starts or keeps an active reconnect loop.
  */
 function scheduleReconnect() {
@@ -578,9 +577,10 @@ function scheduleReconnect() {
  */
 async function connectSocket(options = {}) {
   const reason = typeof options.reason === "string" ? options.reason : "auto";
+  const forceReconnect = options.forceReconnect === true;
   const isManual = reason === "manual";
 
-  if (reconnectSuspended && !isManual) {
+  if (reconnectSuspended && !isManual && !forceReconnect) {
     return;
   }
 
@@ -589,12 +589,13 @@ async function connectSocket(options = {}) {
 
   if (isManual) {
     reconnectSuspended = false;
+    keepaliveRecoveryLastAttemptAt = 0;
     socketError = "";
     connectionLossLogged = false;
     stopReconnectLoop();
   }
 
-  if (socket && socketUrl === nextSocketUrl && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+  if (!forceReconnect && socket && socketUrl === nextSocketUrl && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
     return;
   }
 
@@ -615,13 +616,14 @@ async function connectSocket(options = {}) {
 
     hasConnectedAtLeastOnce = true;
     reconnectSuspended = false;
+    keepaliveRecoveryLastAttemptAt = 0;
     socketConnected = true;
     socketError = "";
     stopReconnectLoop();
     connectionLossLogged = false;
 
     // Startup reconnects can happen after service-worker wakeups (sleep/resume); avoid noisy duplicate tab logs.
-    if (reason !== "startup") {
+    if (reason !== "startup" && reason !== "keepalive") {
       logToBrowserConsole("log", "[mfci] WebSocket connection established.");
     }
 
@@ -652,7 +654,7 @@ async function connectSocket(options = {}) {
       return;
     }
 
-    socketError = "WebSocket connection failed.";
+    socketError = "WebSocket connection failed. Reconnecting...";
     logConnectionLoss("error");
     scheduleReconnect();
   });
@@ -670,6 +672,7 @@ async function connectSocket(options = {}) {
       return;
     }
 
+    socketError = "WebSocket disconnected. Reconnecting...";
     logConnectionLoss("close");
     scheduleReconnect();
   });
@@ -681,6 +684,42 @@ async function connectSocket(options = {}) {
 
     handleSocketMessage(event.data);
   });
+}
+
+/**
+ * Keep WebSocket healthy during long sessions and after sleep/resume cycles.
+ * Keepalive retries are throttled once reconnect has been suspended.
+ * @returns {Promise<void>} Ensures an active connection is available.
+ */
+async function ensureSocketConnection(options = {}) {
+  const trigger = typeof options.trigger === "string" ? options.trigger : "keepalive";
+  const forceReconnect = trigger === "tab-complete";
+
+  if (!hasConnectedAtLeastOnce) {
+    return;
+  }
+
+  if (socketConnected || reconnectTimer) {
+    return;
+  }
+
+  if (reconnectSuspended) {
+    if (forceReconnect) {
+      await connectSocket({ reason: "keepalive", forceReconnect: true });
+      return;
+    }
+
+    const now = Date.now();
+    if (now - keepaliveRecoveryLastAttemptAt < KEEPALIVE_RECOVERY_COOLDOWN_MS) {
+      return;
+    }
+
+    keepaliveRecoveryLastAttemptAt = now;
+    await connectSocket({ reason: "keepalive", forceReconnect: true });
+    return;
+  }
+
+  await connectSocket({ reason: "keepalive" });
 }
 
 /**
@@ -1117,14 +1156,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return deleteHostSettings(message);
       case "POPUP_FORCE_SYNC":
         // Manual refresh should also force a new WebSocket connection attempt.
-        if (reconnectTimer && !socketConnected) {
-          return { ok: true, skipped: "reconnect-in-progress" };
-        }
-        await connectSocket({ reason: "manual" });
+        await connectSocket({ reason: "manual", forceReconnect: true });
         await applyToCurrentTab("manual-sync");
         return { ok: true };
       case "MFCI_KEEPALIVE":
-        // Keepalive is intentionally passive: startup failures stay suspended until manual refresh.
+        // Keepalive actively repairs dropped WebSocket sessions without popup interaction.
+        await ensureSocketConnection({ trigger: "keepalive" });
         return { ok: true };
       case "MFCI_JS_INJECTION_ERROR":
         return recordInjectionError(sender, message);
@@ -1150,6 +1187,9 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     if (!hostKey) {
       return;
     }
+
+    // A tab reload should be enough to recover from stale/suspended WebSocket state.
+    await ensureSocketConnection({ trigger: "tab-complete" });
 
     // Important: clear pending JS markers before sync to prevent state overwrite races.
     await clearPendingUpdatesForHost(hostKey);
