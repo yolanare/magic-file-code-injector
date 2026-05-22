@@ -415,6 +415,89 @@ async function applyToAllTabs(reason) {
 }
 
 /**
+ * Apply global-enable refresh using the same per-type behavior as LiveReload events.
+ * CSS updates are synced in place; JS triggers full reload only when auto-refresh is enabled.
+ * @param {any} state - Full normalized extension state object.
+ * @returns {Promise<void>} Completes after best-effort refresh dispatch.
+ */
+async function applyGlobalEnableWithRefreshFlow(state) {
+  let manifest = null;
+  try {
+    manifest = await fetchManifest(state.global);
+  } catch (_error) {
+    manifest = null;
+  }
+
+  const manifestTypeById = new Map((manifest ? manifest.files : []).map((file) => [file.id, file.type]));
+  const tabs = await tabsQuery({ url: ["http://*/*", "https://*/*"] });
+  let stateChanged = false;
+
+  for (const tab of tabs) {
+    if (typeof tab.id !== "number" || !tab.url) {
+      continue;
+    }
+
+    const hostKey = getHostKey(tab.url);
+    if (!hostKey) {
+      continue;
+    }
+
+    const hostState = state.hosts[hostKey];
+    if (!hostState || hostState.enabledFileIds.length === 0) {
+      continue;
+    }
+
+    const cssFileIds = [];
+    const jsFileIds = [];
+
+    for (const fileId of hostState.enabledFileIds) {
+      const typeFromManifest = manifestTypeById.get(fileId);
+      const typeFromId = fileId.startsWith("css:") ? "css" : fileId.startsWith("js:") ? "js" : "";
+      const fileType = typeFromManifest || typeFromId;
+
+      if (fileType === "css") {
+        cssFileIds.push(fileId);
+        continue;
+      }
+
+      if (fileType === "js") {
+        jsFileIds.push(fileId);
+      }
+    }
+
+    if (cssFileIds.length > 0) {
+      const synced = await syncTab(tab.id, "css-change", { fileIds: cssFileIds });
+      if (synced) {
+        await logToBrowserTabConsole(tab.id, "info", formatRefreshLogMessage("css", cssFileIds, false));
+      }
+    }
+
+    if (jsFileIds.length === 0) {
+      continue;
+    }
+
+    if (!hostState.autoRefreshJs) {
+      for (const pendingId of jsFileIds) {
+        if (!hostState.pendingJsUpdateIds.includes(pendingId)) {
+          hostState.pendingJsUpdateIds.push(pendingId);
+          stateChanged = true;
+        }
+      }
+      continue;
+    }
+
+    // Full reload is required for JS because script tags can have side effects not safely hot-swappable.
+    await delay(50);
+    await tabReload(tab.id).catch(() => {});
+    await logToBrowserTabConsole(tab.id, "info", formatRefreshLogMessage("js", jsFileIds, true));
+  }
+
+  if (stateChanged) {
+    await saveState(state);
+  }
+}
+
+/**
  * Build popup view-model with host state, manifest state and server connectivity status.
  * @returns {Promise<object>} Popup-ready view model.
  */
@@ -1035,7 +1118,9 @@ async function updateAutoRefresh(message) {
 }
 
 /**
- * Persist the global injection toggle and resync all tabs so enable/disable is immediate everywhere.
+ * Persist the global injection toggle.
+ * - Disable: remove injected assets immediately on all tabs.
+ * - Enable: apply refresh flow by type (CSS partial sync, JS reload only when auto-refresh is enabled).
  * @param {any} message - Runtime message payload received from UI/content/background.
  * @returns {Promise<object>} Mutation result for global injection setting.
  */
@@ -1046,7 +1131,13 @@ async function updateGlobalInjectionEnabled(message) {
   state.global.injectionEnabled = nextValue;
   await saveState(state);
 
-  await applyToAllTabs(nextValue ? "global-injection-enabled" : "global-injection-disabled");
+  if (!nextValue) {
+    await applyToAllTabs("global-injection-disabled");
+    return { ok: true };
+  }
+
+  await applyGlobalEnableWithRefreshFlow(state);
+
   return { ok: true };
 }
 
