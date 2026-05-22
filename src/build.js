@@ -1322,21 +1322,30 @@ async function runMergeSameName(config, changedOutputs) {
     const jsGroups = await collectFirstHtmlByBasename(config.paths.buildJsDir);
 
     const allNames = new Set([...htmlGroups.keys(), ...cssGroups.keys(), ...jsGroups.keys()]);
-    await fsPromises.mkdir(config.paths.buildMergeDir, { recursive: true });
+    const mergeCandidates = Array.from(allNames)
+        .sort()
+        .map((name) => {
+            const orderedParts = [
+                { type: 'html', filePath: htmlGroups.get(name) },
+                { type: 'css', filePath: cssGroups.get(name) },
+                { type: 'js', filePath: jsGroups.get(name) },
+            ].filter((part) => Boolean(part.filePath));
+
+            return { name, orderedParts };
+        })
+        .filter((entry) => entry.orderedParts.length >= 2);
+
     const expectedOutputs = new Set();
 
     let count = 0;
 
-    for (const name of Array.from(allNames).sort()) {
-        const orderedParts = [
-            { type: 'html', filePath: htmlGroups.get(name) },
-            { type: 'css', filePath: cssGroups.get(name) },
-            { type: 'js', filePath: jsGroups.get(name) },
-        ].filter((part) => Boolean(part.filePath));
+    if (mergeCandidates.length === 0) {
+        return 0;
+    }
 
-        if (orderedParts.length < 2) {
-            continue;
-        }
+    await fsPromises.mkdir(config.paths.buildMergeDir, { recursive: true });
+
+    for (const { name, orderedParts } of mergeCandidates) {
 
         const mergedText = `${(await Promise.all(orderedParts.map((part) => resolveMergedPartContent(part.filePath))))
             .map((entry) => String(entry || '').trim())
