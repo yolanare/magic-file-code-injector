@@ -910,6 +910,7 @@ async function runModulesBuild(config, scope, changedOutputs) {
     const moduleCssAssets = new Set();
     const moduleJsAssets = new Set();
     const expectedModuleOutputs = new Set();
+    const moduleOutputsByType = new Map();
 
     let count = 0;
 
@@ -930,6 +931,13 @@ async function runModulesBuild(config, scope, changedOutputs) {
             continue;
         }
 
+        const sourceMeta = resolveModuleSourceMeta(sourceDir, inputFile);
+        if (sourceMeta) {
+            const moduleOutputEntry = moduleOutputsByType.get(sourceMeta.moduleName) || { html: new Set(), css: new Set(), js: new Set() };
+            moduleOutputEntry[fileType].add(outputFile);
+            moduleOutputsByType.set(sourceMeta.moduleName, moduleOutputEntry);
+        }
+
         expectedModuleOutputs.add(outputFile);
 
         if (fileType === 'css') {
@@ -944,6 +952,20 @@ async function runModulesBuild(config, scope, changedOutputs) {
         if (fileType === 'js') {
             moduleJsAssets.add(outputFile);
             expectedModuleOutputs.add(replaceExtension(outputFile, '.html'));
+        }
+    }
+
+    for (const [moduleName, moduleOutputEntry] of moduleOutputsByType.entries()) {
+        if (moduleOutputEntry.html.size > 1) {
+            expectedModuleOutputs.add(path.resolve(config.paths.buildModulesDir, moduleName, `${moduleName}.html`));
+        }
+
+        if (moduleOutputEntry.css.size > 1) {
+            expectedModuleOutputs.add(path.resolve(config.paths.buildModulesDir, moduleName, `${moduleName}.css`));
+        }
+
+        if (moduleOutputEntry.js.size > 1) {
+            expectedModuleOutputs.add(path.resolve(config.paths.buildModulesDir, moduleName, `${moduleName}.js`));
         }
     }
 
@@ -1126,6 +1148,42 @@ async function resolveInlineModulePartContent(type, absoluteFilePath) {
 }
 
 /**
+ * Write one module-level language concatenation file when there are multiple files of that language.
+ * @param {any} config - Normalized build config.
+ * @param {string} moduleDirPath - Absolute module directory path in `build/modules`.
+ * @param {string} moduleName - Module folder name.
+ * @param {"html"|"css"|"js"} type - Language type.
+ * @param {string[]} files - Language files found in module output folders.
+ * @param {Set<string>} changedOutputs - Mutable set of changed output files.
+ * @returns {Promise<number>} Number of changed files.
+ */
+async function writeModuleLanguageConcat(config, moduleDirPath, moduleName, type, files, changedOutputs) {
+    const extension = type === 'html' ? '.html' : type === 'css' ? '.css' : '.js';
+    const concatFile = path.resolve(moduleDirPath, `${moduleName}${extension}`);
+
+    if (files.length < 2) {
+        const removed = await removeFileIfExists(concatFile);
+        if (!removed) {
+            return 0;
+        }
+
+        changedOutputs.add(concatFile);
+        logBuild(config, 'warn', `Module ${type} concat removed (not enough files): ${displayPath(config, concatFile)}`);
+        return 1;
+    }
+
+    const mergedText = `${(await Promise.all(files.map((filePath) => readTextFileTrimmed(filePath)))).filter(Boolean).join('\n\n')}\n`;
+    const changed = await writeTextFileIfChanged(concatFile, mergedText);
+    if (!changed) {
+        return 0;
+    }
+
+    changedOutputs.add(concatFile);
+    logBuild(config, 'success', `Module ${type} concatenated: ${files.length} file(s) -> ${displayPath(config, concatFile)}`);
+    return 1;
+}
+
+/**
  * Merge one module directory into one standalone HTML output next to module folders.
  * @param {any} config - Normalized build config.
  * @param {string} moduleDirPath - Absolute module directory path in `build/modules`.
@@ -1153,6 +1211,11 @@ async function mergeOneModuleDirectory(config, moduleDirPath, moduleName, change
             :   [],
     };
 
+    let changedCount = 0;
+    changedCount += await writeModuleLanguageConcat(config, moduleDirPath, moduleName, 'html', groupedFiles.html, changedOutputs);
+    changedCount += await writeModuleLanguageConcat(config, moduleDirPath, moduleName, 'css', groupedFiles.css, changedOutputs);
+    changedCount += await writeModuleLanguageConcat(config, moduleDirPath, moduleName, 'js', groupedFiles.js, changedOutputs);
+
     const mergeableFileCount = groupedFiles.html.length + groupedFiles.css.length + groupedFiles.js.length;
     const mergedParts = [];
     for (const [type, files] of [
@@ -1172,23 +1235,23 @@ async function mergeOneModuleDirectory(config, moduleDirPath, moduleName, change
     if (mergeableFileCount === 0) {
         const removed = await removeFileIfExists(moduleMergeOutputFile);
         if (!removed) {
-            return 0;
+            return changedCount;
         }
 
         changedOutputs.add(moduleMergeOutputFile);
         logBuild(config, 'warn', `Module merge removed (no mergeable files): ${displayPath(config, moduleMergeOutputFile)}`);
-        return 1;
+        return changedCount + 1;
     }
 
     const mergedHtmlText = mergedParts.length > 0 ? `${mergedParts.join('\n\n')}\n` : '\n';
     const changed = await writeTextFileIfChanged(moduleMergeOutputFile, mergedHtmlText);
     if (!changed) {
-        return 0;
+        return changedCount;
     }
 
     changedOutputs.add(moduleMergeOutputFile);
     logBuild(config, 'success', `Module merged: ${displayPath(config, moduleDirPath)} -> ${displayPath(config, moduleMergeOutputFile)}`);
-    return 1;
+    return changedCount + 1;
 }
 
 /**
@@ -1213,7 +1276,6 @@ async function runModuleDirectoryMerges(config, changedOutputs) {
 
     const moduleNames = new Set(moduleEntries);
     let changedCount = 0;
-
     for (const moduleName of moduleEntries) {
         const moduleDirPath = path.resolve(config.paths.buildModulesDir, moduleName);
         changedCount += await mergeOneModuleDirectory(config, moduleDirPath, moduleName, changedOutputs);
