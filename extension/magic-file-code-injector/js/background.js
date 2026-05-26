@@ -39,10 +39,16 @@ const RECONNECT_INTERVAL_MS = 2000;
 const RECONNECT_WINDOW_MS = 20000;
 const KEEPALIVE_RECOVERY_COOLDOWN_MS = 30000;
 const SOCKET_EVENT_BATCH_WINDOW_MS = 150;
+const FETCH_TIMEOUT_MS = 5000;
+const TAB_MESSAGE_TIMEOUT_MS = 3000;
+const TAB_RELOAD_TIMEOUT_MS = 3000;
+const SOCKET_EVENT_BATCH_MAX_RUNTIME_MS = 10000;
 
 let pendingSocketEvents = [];
 let socketBatchTimer = null;
 let socketBatchInFlight = false;
+let socketBatchStartedAt = 0;
+let socketBatchGeneration = 0;
 
 /**
  * Promisify chrome.storage.get for easier async flow handling.
@@ -124,7 +130,22 @@ function tabGet(tabId) {
  */
 function tabSendMessage(tabId, payload) {
   return new Promise((resolve) => {
+    let settled = false;
+    const timeoutId = setTimeout(() => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      resolve({ ok: false, error: `tabs.sendMessage timeout after ${TAB_MESSAGE_TIMEOUT_MS}ms.`, timeout: true });
+    }, TAB_MESSAGE_TIMEOUT_MS);
+
     chrome.tabs.sendMessage(tabId, payload, () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeoutId);
+
       const runtimeError = chrome.runtime.lastError;
       if (runtimeError) {
         resolve({ ok: false, error: runtimeError.message });
@@ -161,7 +182,22 @@ async function logToBrowserTabConsole(tabId, level, message) {
  */
 function tabReload(tabId) {
   return new Promise((resolve, reject) => {
+    let settled = false;
+    const timeoutId = setTimeout(() => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      reject(new Error(`tabs.reload timeout after ${TAB_RELOAD_TIMEOUT_MS}ms.`));
+    }, TAB_RELOAD_TIMEOUT_MS);
+
     chrome.tabs.reload(tabId, () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeoutId);
+
       const runtimeError = chrome.runtime.lastError;
       if (runtimeError) {
         reject(new Error(runtimeError.message));
@@ -181,6 +217,32 @@ function delay(ms) {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+/**
+ * Fetch with a hard timeout so a stalled local request cannot block future refresh batches.
+ * @param {string} url - Absolute URL to request.
+ * @param {RequestInit} options - Fetch options.
+ * @param {number} timeoutMs - Timeout duration in milliseconds.
+ * @param {string} label - Human-readable request name for errors.
+ * @returns {Promise<Response>} Fetch response.
+ */
+async function fetchWithTimeout(url, options, timeoutMs, label) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => {
+    controller.abort();
+  }, timeoutMs);
+
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (error && error.name === "AbortError") {
+      throw new Error(`${label} timed out after ${timeoutMs}ms.`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 /**
@@ -236,7 +298,7 @@ function getExistingHostState(state, hostKey) {
  */
 async function fetchManifest(globalState) {
   const manifestUrl = getManifestUrl(globalState);
-  const response = await fetch(manifestUrl, { cache: "no-store" });
+  const response = await fetchWithTimeout(manifestUrl, { cache: "no-store" }, FETCH_TIMEOUT_MS, "Manifest request");
 
   if (!response.ok) {
     throw new Error(`Manifest request failed (${response.status}).`);
@@ -258,7 +320,7 @@ async function fetchManifest(globalState) {
  * @returns {Promise<string>} Raw file content.
  */
 async function fetchFileText(url) {
-  const response = await fetch(url, { cache: "no-store" });
+  const response = await fetchWithTimeout(url, { cache: "no-store" }, FETCH_TIMEOUT_MS, "File request");
 
   if (!response.ok) {
     throw new Error(`Unable to read ${url} (${response.status}).`);
@@ -918,7 +980,14 @@ function getAffectedIdsForHostEvent(hostState, event, manifestTypeById) {
  */
 function scheduleSocketEventFlush() {
   if (socketBatchInFlight) {
-    return;
+    const batchAgeMs = socketBatchStartedAt ? Date.now() - socketBatchStartedAt : 0;
+    if (socketBatchStartedAt && batchAgeMs < SOCKET_EVENT_BATCH_MAX_RUNTIME_MS) {
+      return;
+    }
+
+    socketBatchGeneration += 1;
+    socketBatchInFlight = false;
+    socketBatchStartedAt = 0;
   }
 
   if (socketBatchTimer) {
@@ -941,6 +1010,9 @@ async function flushSocketEventBatch() {
   }
 
   socketBatchInFlight = true;
+  socketBatchStartedAt = Date.now();
+  socketBatchGeneration += 1;
+  const batchGeneration = socketBatchGeneration;
 
   const events = pendingSocketEvents;
   pendingSocketEvents = [];
@@ -1046,7 +1118,12 @@ async function flushSocketEventBatch() {
       await saveState(state);
     }
   } finally {
+    if (batchGeneration !== socketBatchGeneration) {
+      return;
+    }
+
     socketBatchInFlight = false;
+    socketBatchStartedAt = 0;
     if (pendingSocketEvents.length > 0) {
       scheduleSocketEventFlush();
     }
