@@ -1,5 +1,12 @@
-// The MV3 service worker keeps only orchestration here; pure helpers stay in background-utils.js.
-importScripts("background-utils.js");
+// Chrome MV3 loads this as a service worker; Firefox loads it as a background script.
+if (!self.MfciBackgroundUtils && typeof importScripts === "function") {
+  importScripts("background-utils.js");
+}
+
+if (!self.MfciBackgroundUtils) {
+  throw new Error("[mfci] background-utils.js must be loaded before background.js.");
+}
+
 const {
   STORAGE_KEY,
   DEFAULT_HOST_STATE,
@@ -24,6 +31,16 @@ let socketConnected = false;
 let socketError = "";
 
 const OFFSCREEN_DOCUMENT_PATH = "offscreen.html";
+const LR_PROTOCOLS = [
+  "http://livereload.com/protocols/official-7",
+  "http://livereload.com/protocols/official-8",
+  "http://livereload.com/protocols/official-9",
+];
+const DIRECT_SOCKET_RECONNECT_FAST_INTERVAL_MS = 2000;
+const DIRECT_SOCKET_RECONNECT_SLOW_INTERVAL_MS = 10000;
+const DIRECT_SOCKET_RECONNECT_FAST_WINDOW_MS = 20000;
+const DIRECT_SOCKET_KEEPALIVE_INTERVAL_MS = 15000;
+const DIRECT_SOCKET_RECYCLE_AGE_MS = 10 * 60 * 1000;
 const SOCKET_EVENT_BATCH_WINDOW_MS = 150;
 const FETCH_TIMEOUT_MS = 5000;
 const TAB_MESSAGE_TIMEOUT_MS = 3000;
@@ -41,6 +58,14 @@ let socketBatchInFlight = false;
 let socketBatchStartedAt = 0;
 let socketBatchGeneration = 0;
 let socketBatchFlushWaiters = [];
+let directSocket = null;
+let directSocketKeepaliveTimer = null;
+let directSocketReconnectTimer = null;
+let directSocketReconnectStartedAt = 0;
+let directSocketOpenedAt = 0;
+let directSocketHasConnectedAtLeastOnce = false;
+let directSocketConnectionLossLogged = false;
+let directSocketStatusWaiters = [];
 
 /**
  * Promisify chrome.storage.get for easier async flow handling.
@@ -761,6 +786,295 @@ function logToBrowserConsole(level, message) {
     .catch(() => {});
 }
 
+function canUseOffscreenTransport() {
+  return Boolean(chrome.offscreen && chrome.offscreen.createDocument);
+}
+
+function getDirectSocketStatusSnapshot() {
+  return {
+    ok: true,
+    connected: socketConnected,
+    error: socketError,
+    url: socketUrl,
+  };
+}
+
+function resolveDirectSocketStatusWaiters() {
+  const waiters = directSocketStatusWaiters;
+  directSocketStatusWaiters = [];
+
+  for (const resolve of waiters) {
+    resolve(getDirectSocketStatusSnapshot());
+  }
+}
+
+function waitForDirectSocketStatus(timeoutMs = RUNTIME_MESSAGE_TIMEOUT_MS) {
+  if (socketConnected || socketError || !directSocket || directSocket.readyState !== WebSocket.CONNECTING) {
+    return Promise.resolve(getDirectSocketStatusSnapshot());
+  }
+
+  return new Promise((resolve) => {
+    const timeoutId = setTimeout(() => {
+      directSocketStatusWaiters = directSocketStatusWaiters.filter((waiter) => waiter !== resolveOnce);
+      resolve(getDirectSocketStatusSnapshot());
+    }, timeoutMs);
+
+    function resolveOnce(status) {
+      clearTimeout(timeoutId);
+      resolve(status);
+    }
+
+    directSocketStatusWaiters.push(resolveOnce);
+  });
+}
+
+function stopDirectSocketKeepalive() {
+  if (directSocketKeepaliveTimer) {
+    clearInterval(directSocketKeepaliveTimer);
+    directSocketKeepaliveTimer = null;
+  }
+}
+
+function stopDirectSocketReconnect() {
+  if (directSocketReconnectTimer) {
+    clearTimeout(directSocketReconnectTimer);
+    directSocketReconnectTimer = null;
+  }
+  directSocketReconnectStartedAt = 0;
+}
+
+function sendDirectSocketPayload(currentSocket, payload, failureReason) {
+  if (directSocket !== currentSocket || currentSocket.readyState !== WebSocket.OPEN) {
+    return false;
+  }
+
+  try {
+    currentSocket.send(JSON.stringify(payload));
+    return true;
+  } catch (_error) {
+    failDirectSocket(currentSocket, failureReason);
+    return false;
+  }
+}
+
+function sendDirectSocketHello(currentSocket) {
+  sendDirectSocketPayload(
+    currentSocket,
+    {
+      command: "hello",
+      protocols: LR_PROTOCOLS,
+      ver: "3.0.0",
+    },
+    "hello"
+  );
+}
+
+function sendDirectSocketInfo(currentSocket) {
+  sendDirectSocketPayload(
+    currentSocket,
+    {
+      command: "info",
+      url: chrome.runtime.getURL("manifest.json"),
+    },
+    "keepalive"
+  );
+}
+
+function scheduleDirectSocketReconnect() {
+  if (socketConnected || !socketUrl) {
+    stopDirectSocketReconnect();
+    return;
+  }
+
+  if (!directSocketReconnectStartedAt) {
+    directSocketReconnectStartedAt = Date.now();
+  }
+
+  if (directSocketReconnectTimer) {
+    return;
+  }
+
+  const elapsedMs = Date.now() - directSocketReconnectStartedAt;
+  const delayMs =
+    elapsedMs < DIRECT_SOCKET_RECONNECT_FAST_WINDOW_MS ? DIRECT_SOCKET_RECONNECT_FAST_INTERVAL_MS : DIRECT_SOCKET_RECONNECT_SLOW_INTERVAL_MS;
+
+  directSocketReconnectTimer = setTimeout(() => {
+    directSocketReconnectTimer = null;
+    if (!socketConnected) {
+      connectDirectSocket({ url: socketUrl, reason: "reconnect" });
+    }
+  }, delayMs);
+}
+
+function logDirectSocketLoss(reason) {
+  if (directSocketConnectionLossLogged || !directSocketHasConnectedAtLeastOnce) {
+    return;
+  }
+
+  directSocketConnectionLossLogged = true;
+  logToBrowserConsole("warn", `[mfci] WebSocket connection lost (${reason}). Reconnecting automatically.`);
+}
+
+function failDirectSocket(currentSocket, reason) {
+  if (directSocket !== currentSocket) {
+    return;
+  }
+
+  stopDirectSocketKeepalive();
+  socketConnected = false;
+  socketError = `WebSocket ${reason} failed. Reconnecting...`;
+  resolveDirectSocketStatusWaiters();
+
+  try {
+    currentSocket.close();
+  } catch (_error) {
+    // Reconnection should continue even if the stale socket refuses to close.
+  }
+
+  scheduleDirectSocketReconnect();
+}
+
+function runDirectSocketHealthCheck(currentSocket) {
+  if (directSocket !== currentSocket) {
+    return;
+  }
+
+  if (currentSocket.readyState !== WebSocket.OPEN) {
+    failDirectSocket(currentSocket, "keepalive");
+    return;
+  }
+
+  if (directSocketOpenedAt && Date.now() - directSocketOpenedAt >= DIRECT_SOCKET_RECYCLE_AGE_MS) {
+    connectDirectSocket({ url: socketUrl, reason: "health-check", forceReconnect: true });
+    return;
+  }
+
+  sendDirectSocketInfo(currentSocket);
+}
+
+function startDirectSocketKeepalive(currentSocket) {
+  stopDirectSocketKeepalive();
+  directSocketKeepaliveTimer = setInterval(() => {
+    runDirectSocketHealthCheck(currentSocket);
+  }, DIRECT_SOCKET_KEEPALIVE_INTERVAL_MS);
+}
+
+/**
+ * Own the LiveReload socket directly when the browser has no Chrome offscreen API.
+ * Firefox background scripts can keep this connection without the Chrome-only offscreen document.
+ * @param {{url:string,reason?:string,forceReconnect?:boolean}} options - Direct socket connection options.
+ * @returns {Promise<object>} Connection status after the current open attempt settles or times out.
+ */
+function connectDirectSocket(options) {
+  const nextSocketUrl = typeof options.url === "string" ? options.url : socketUrl;
+  const reason = typeof options.reason === "string" ? options.reason : "auto";
+  const forceReconnect = options.forceReconnect === true;
+  const isManual = reason === "manual";
+
+  if (!nextSocketUrl) {
+    socketConnected = false;
+    socketError = "WebSocket URL is missing.";
+    resolveDirectSocketStatusWaiters();
+    return Promise.resolve(getDirectSocketStatusSnapshot());
+  }
+
+  if (isManual) {
+    socketError = "";
+    directSocketConnectionLossLogged = false;
+    stopDirectSocketReconnect();
+  }
+
+  if (
+    !forceReconnect &&
+    directSocket &&
+    socketUrl === nextSocketUrl &&
+    (directSocket.readyState === WebSocket.OPEN || directSocket.readyState === WebSocket.CONNECTING)
+  ) {
+    if (directSocket.readyState === WebSocket.OPEN && !directSocketKeepaliveTimer) {
+      startDirectSocketKeepalive(directSocket);
+    }
+    return waitForDirectSocketStatus();
+  }
+
+  if (directSocket) {
+    const previousSocket = directSocket;
+    directSocket = null;
+    stopDirectSocketKeepalive();
+    try {
+      previousSocket.close();
+    } catch (_error) {
+      // Replacing the socket should continue even if the stale instance refuses to close.
+    }
+  }
+
+  socketConnected = false;
+  socketError = "";
+  socketUrl = nextSocketUrl;
+  directSocketOpenedAt = 0;
+
+  const currentSocket = new WebSocket(nextSocketUrl);
+  directSocket = currentSocket;
+
+  currentSocket.addEventListener("open", () => {
+    if (directSocket !== currentSocket) {
+      return;
+    }
+
+    directSocketHasConnectedAtLeastOnce = true;
+    directSocketConnectionLossLogged = false;
+    socketConnected = true;
+    socketError = "";
+    directSocketOpenedAt = Date.now();
+    stopDirectSocketReconnect();
+
+    if (reason === "manual" || reason === "reconnect") {
+      logToBrowserConsole("log", "[mfci] WebSocket connection established.");
+    }
+
+    sendDirectSocketHello(currentSocket);
+    sendDirectSocketInfo(currentSocket);
+    startDirectSocketKeepalive(currentSocket);
+    resolveDirectSocketStatusWaiters();
+  });
+
+  currentSocket.addEventListener("error", () => {
+    if (directSocket !== currentSocket) {
+      return;
+    }
+
+    stopDirectSocketKeepalive();
+    socketConnected = false;
+    socketError = directSocketHasConnectedAtLeastOnce ? "WebSocket connection failed. Reconnecting..." : "WebSocket connection failed. Retrying...";
+    resolveDirectSocketStatusWaiters();
+    logDirectSocketLoss("error");
+    scheduleDirectSocketReconnect();
+  });
+
+  currentSocket.addEventListener("close", () => {
+    if (directSocket !== currentSocket) {
+      return;
+    }
+
+    stopDirectSocketKeepalive();
+    socketConnected = false;
+    directSocketOpenedAt = 0;
+    socketError = directSocketHasConnectedAtLeastOnce ? "WebSocket disconnected. Reconnecting..." : "WebSocket connection failed. Retrying...";
+    resolveDirectSocketStatusWaiters();
+    logDirectSocketLoss("close");
+    scheduleDirectSocketReconnect();
+  });
+
+  currentSocket.addEventListener("message", (event) => {
+    if (directSocket !== currentSocket) {
+      return;
+    }
+
+    void handleSocketMessage(event.data);
+  });
+
+  return waitForDirectSocketStatus();
+}
+
 /**
  * Read whether the offscreen LiveReload context already exists.
  * @returns {Promise<boolean>} True when an offscreen document is available.
@@ -788,7 +1102,7 @@ async function hasOffscreenDocument() {
  * @returns {Promise<boolean>} True when offscreen ownership is ready.
  */
 async function ensureOffscreenDocument() {
-  if (!chrome.offscreen || !chrome.offscreen.createDocument) {
+  if (!canUseOffscreenTransport()) {
     socketConnected = false;
     socketError = "Offscreen documents are not supported by this browser.";
     return false;
@@ -853,6 +1167,11 @@ async function connectSocket(options = {}) {
   const nextSocketUrl = `ws://${state.global.host}:${state.global.port}/livereload`;
 
   socketUrl = nextSocketUrl;
+
+  if (!canUseOffscreenTransport()) {
+    await connectDirectSocket({ url: nextSocketUrl, reason, forceReconnect });
+    return;
+  }
 
   if (!(await ensureOffscreenDocument())) {
     return;

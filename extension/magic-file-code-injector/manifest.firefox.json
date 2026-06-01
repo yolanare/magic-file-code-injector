@@ -1,0 +1,57 @@
+{
+  "manifest_version": 3,
+  "name": "magic-file-code-injector",
+  "description": "Inject local CSS and JavaScript files by domain with live updates.",
+  "version": "1.0.0",
+  "action": {
+    "default_icon": "icons/48x48.png",
+    "default_popup": "popup.html",
+    "default_title": "magic-file-code-injector"
+  },
+  "background": {
+    "scripts": [
+      "js/background-utils.js",
+      "js/background.js"
+    ]
+  },
+  "options_ui": {
+    "open_in_tab": true,
+    "page": "options.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "js/content.js"
+      ],
+      "run_at": "document_start"
+    }
+  ],
+  "permissions": [
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "magic-file-code-injector@yolanare.local",
+      "strict_min_version": "109.0",
+      "data_collection_permissions": {
+        "required": [
+          "none"
+        ]
+      }
+    }
+  },
+  "icons": {
+    "48": "icons/48x48.png",
+    "64": "icons/64x64.png",
+    "128": "icons/128x128.png"
+  }
+}
