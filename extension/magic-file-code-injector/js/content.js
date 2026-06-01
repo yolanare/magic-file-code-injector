@@ -120,6 +120,44 @@
   }
 
   /**
+   * Format a stable list of injected file ids for concise page-load logs.
+   * @param {string[]} fileIds - File IDs list.
+   * @returns {string} Human-readable list.
+   */
+  function formatFileIdList(fileIds) {
+    const uniqueIds = Array.from(new Set((Array.isArray(fileIds) ? fileIds : []).filter(Boolean)));
+    if (uniqueIds.length === 0) {
+      return "unknown file";
+    }
+    return uniqueIds.join(", ");
+  }
+
+  /**
+   * Return whether one sync reason is part of initial/page-load application.
+   * @param {string} syncReason - Sync reason used for diagnostics and message tracing.
+   * @returns {boolean} True for initial load sync reasons.
+   */
+  function isLoadSyncReason(syncReason) {
+    return syncReason === "content-ready-css" || syncReason === "content-ready-js" || syncReason === "tab-complete";
+  }
+
+  /**
+   * Log one concise page-load injection summary per type.
+   * @param {"css"|"js"} fileType - Injected file type.
+   * @param {string[]} fileIds - File IDs injected or already present for this sync.
+   * @param {string} syncReason - Sync reason used for diagnostics and message tracing.
+   * @returns {void} Writes a summary log for load syncs only.
+   */
+  function logLoadInjectionSummary(fileType, fileIds, syncReason) {
+    if (!isLoadSyncReason(syncReason) || fileIds.length === 0) {
+      return;
+    }
+
+    const typeLabel = fileType === "js" ? "JS" : "CSS";
+    logToPageConsole("info", `[mfci] ${typeLabel} loaded: ${formatFileIdList(fileIds)}`);
+  }
+
+  /**
    * Apply or refresh one CSS file in-place without full page reload.
    * @param {any} file - Manifest or build file descriptor currently processed.
    * @param {any} syncReason - Sync reason used for diagnostics and message tracing.
@@ -157,17 +195,17 @@
    * @param {any} file - Manifest or build file descriptor currently processed.
    * @returns {void} Injects one JS file in DOM when content changed.
    */
-  function executeJsFile(file) {
+  function executeJsFile(file, options = {}) {
     const rootNode = getRootNode();
     if (!rootNode) {
-      return;
+      return false;
     }
 
     const content = typeof file.content === "string" ? file.content : "";
     const contentHash = hashString(content);
 
     if (executedScriptHashes.get(file.id) === contentHash) {
-      return;
+      return false;
     }
 
     // Remove previous tag first to force browser re-evaluation when the content hash changes.
@@ -184,7 +222,7 @@
     const sourceUrl = typeof file.url === "string" && file.url.length > 0 ? file.url : "";
     if (!sourceUrl) {
       notifyScriptError(file.id, "Missing JavaScript URL.");
-      return;
+      return false;
     }
 
     // Use a real script URL (not inline text/blob) to stay compatible with strict CSP policies.
@@ -197,7 +235,10 @@
 
     rootNode.appendChild(scriptElement);
     executedScriptHashes.set(file.id, contentHash);
-    logToPageConsole("info", `[mfci] JS refreshed: ${file.id} (as ${file.scriptType || "script"})`);
+    if (options.logRefresh !== false) {
+      logToPageConsole("info", `[mfci] JS refreshed: ${file.id} (as ${file.scriptType || "script"})`);
+    }
+    return true;
   }
 
   /**
@@ -212,19 +253,23 @@
     const files = Array.from(pendingJsFiles.values());
     pendingJsFiles.clear();
 
+    const loadedIds = [];
     for (const file of files) {
-      executeJsFile(file);
+      executeJsFile(file, { logRefresh: false });
+      loadedIds.push(file.id);
     }
+    logLoadInjectionSummary("js", loadedIds, "content-ready-js");
   }
 
   /**
    * Queue JS during early page load so CSS can apply first and scripts run after DOM parsing.
    * @param {any} file - Manifest or build file descriptor currently processed.
+   * @param {string} syncReason - Sync reason used for diagnostics and message tracing.
    * @returns {void} Queues or executes the JS file depending on DOM readiness.
    */
-  function applyJsFile(file) {
+  function applyJsFile(file, syncReason) {
     if (isDomReadyForJs()) {
-      executeJsFile(file);
+      executeJsFile(file, { logRefresh: !isLoadSyncReason(syncReason) });
       return;
     }
 
@@ -317,6 +362,8 @@
 
     const desiredCssIds = new Set();
     const desiredJsIds = new Set();
+    const loadedCssIds = [];
+    const immediateJsIds = [];
 
     for (const file of files) {
       if (!file || typeof file.id !== "string") {
@@ -327,14 +374,21 @@
       if (file.type === "css") {
         desiredCssIds.add(file.id);
         applyCssFile(file, syncReason);
+        loadedCssIds.push(file.id);
         continue;
       }
 
       if (file.type === "js") {
         desiredJsIds.add(file.id);
-        applyJsFile(file);
+        applyJsFile(file, syncReason);
+        if (isDomReadyForJs()) {
+          immediateJsIds.push(file.id);
+        }
       }
     }
+
+    logLoadInjectionSummary("css", loadedCssIds, syncReason);
+    logLoadInjectionSummary("js", immediateJsIds, syncReason);
 
     if (isPartial) {
       // Partial sync applies only changed files and keeps existing injected state untouched.

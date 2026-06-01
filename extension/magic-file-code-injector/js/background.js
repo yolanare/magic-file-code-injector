@@ -31,6 +31,7 @@ const TAB_RELOAD_TIMEOUT_MS = 3000;
 const SOCKET_EVENT_BATCH_MAX_RUNTIME_MS = 10000;
 
 let offscreenCreatePromise = null;
+let initialLoadSyncedTabIds = new Set();
 let pendingSocketEvents = [];
 let socketBatchTimer = null;
 let socketBatchInFlight = false;
@@ -1233,6 +1234,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case "MFCI_CONTENT_READY":
         ensureSocketConnection({ trigger: "content-ready" }).catch(() => {});
         if (sender && sender.tab && typeof sender.tab.id === "number") {
+          if (initialLoadSyncedTabIds.has(sender.tab.id)) {
+            return { ok: true };
+          }
+
+          initialLoadSyncedTabIds.add(sender.tab.id);
+          const hostKey = getHostKey(sender.tab.url || "");
+          if (hostKey) {
+            await clearPendingUpdatesForHost(hostKey);
+          }
+
           const cssSynced = await syncTab(sender.tab.id, "content-ready-css", { fileTypes: ["css"] });
           const jsSynced = await syncTab(sender.tab.id, "content-ready-js", { fileTypes: ["js"] });
           return { ok: cssSynced || jsSynced };
@@ -1251,6 +1262,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status === "loading") {
+    initialLoadSyncedTabIds.delete(tabId);
+    return;
+  }
+
   if (changeInfo.status !== "complete") {
     return;
   }
@@ -1266,10 +1282,19 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     // A tab reload should be enough to recover from stale/suspended WebSocket state.
     await ensureSocketConnection({ trigger: "tab-complete" });
 
+    if (initialLoadSyncedTabIds.has(tabId)) {
+      return;
+    }
+    initialLoadSyncedTabIds.add(tabId);
+
     // Important: clear pending JS markers before sync to prevent state overwrite races.
     await clearPendingUpdatesForHost(hostKey);
     await syncTab(tabId, "tab-complete");
   })().catch(() => {});
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  initialLoadSyncedTabIds.delete(tabId);
 });
 
 chrome.runtime.onInstalled.addListener(() => {
