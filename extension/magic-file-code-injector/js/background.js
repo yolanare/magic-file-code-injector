@@ -1,4 +1,4 @@
-// Load pure helpers once so this service-worker file stays focused on side effects and orchestration.
+// The MV3 service worker keeps only orchestration here; pure helpers stay in background-utils.js.
 importScripts("background-utils.js");
 const {
   STORAGE_KEY,
@@ -62,7 +62,7 @@ function storageGet(key) {
 
 /**
  * Promisify chrome.storage.set for easier async flow handling.
- * @param {any} value - Raw value to sanitize or normalize before runtime usage.
+ * @param {object} value - Storage object to persist through chrome.storage.local.
  * @returns {Promise<void>} Resolves when write succeeds.
  */
 function storageSet(value) {
@@ -173,7 +173,7 @@ function windowUpdate(windowId, updateInfo) {
 /**
  * Send a message to content script and normalize runtime errors into a result object.
  * @param {any} tabId - Chrome tab identifier to target.
- * @param {any} payload - Message or payload object exchanged between extension components.
+ * @param {object} payload - Runtime message sent to a content script.
  * @returns {Promise<{ok:boolean,error?:string}>} Message delivery result.
  */
 function tabSendMessage(tabId, payload) {
@@ -254,7 +254,7 @@ function tabReload(tabId) {
 
 /**
  * Small timing helper used to sequence reload actions.
- * @param {any} ms - Delay duration in milliseconds.
+ * @param {number} ms - Delay duration in milliseconds.
  * @returns {Promise<void>} Resolves after the requested delay.
  */
 function delay(ms) {
@@ -394,7 +394,7 @@ async function fetchManifest(globalState) {
 
 /**
  * Fetch file source text for CSS/JS injection payloads.
- * @param {any} url - Absolute URL to fetch.
+ * @param {string} url - Absolute URL to fetch.
  * @returns {Promise<string>} Raw file content.
  */
 async function fetchFileText(url) {
@@ -412,14 +412,14 @@ async function fetchFileText(url) {
  * @param {any} state - Full normalized extension state object.
  * @param {any} hostKey - Domain key used to isolate per-site settings.
  * @param {any} hostState - Per-site configuration including enabled files and JS refresh mode.
- * @param {any} options - Optional sync filters used for partial update delivery.
+ * @param {{fileIds?:string[],fileTypes?:string[]}} options - Optional sync filters used for partial update delivery.
  * @returns {Promise<object>} Payload sent to content script for tab sync.
  */
 async function buildSyncPayload(state, hostKey, hostState, options = {}) {
   const manifest = await fetchManifest(state.global);
   const injectionEnabled = state.global.injectionEnabled !== false;
 
-  // Only ship currently enabled files to content scripts to keep injection minimal.
+  // Partial LiveReload sync must not remove unrelated assets that are already injected in the page.
   const activeManifestFiles = manifest.files.filter((file) => hostState.enabledFileIds.includes(file.id));
   const requestedFileIds = uniqueStrings(Array.isArray(options.fileIds) ? options.fileIds : []);
   const requestedSet = new Set(requestedFileIds);
@@ -473,8 +473,8 @@ async function getActiveTab() {
 /**
  * Synchronize one tab with current host configuration and manifest content.
  * @param {any} tabId - Chrome tab identifier to target.
- * @param {any} reason - Sync reason used for diagnostics and message tracing.
- * @param {any} options - Optional sync filters used for partial update delivery.
+ * @param {string} reason - Sync reason used for diagnostics and message tracing.
+ * @param {{fileIds?:string[],fileTypes?:string[]}} options - Optional sync filters used for partial update delivery.
  * @returns {Promise<boolean>} True when sync payload is delivered to content script.
  */
 async function syncTab(tabId, reason, options = {}) {
@@ -536,7 +536,7 @@ async function clearPendingUpdatesForHost(hostKey) {
 
 /**
  * Convenience helper to sync active tab after UI-driven setting changes.
- * @param {any} reason - Sync reason used for diagnostics and message tracing.
+ * @param {string} reason - Sync reason used for diagnostics and message tracing.
  * @returns {Promise<void>} Completes after active tab sync attempt.
  */
 async function applyToCurrentTab(reason) {
@@ -550,6 +550,7 @@ async function applyToCurrentTab(reason) {
 
 /**
  * Open the extension options page and keep it active after the popup closes.
+ * Chrome may restore focus to the previous tab as the popup closes, so the created tab is refocused once.
  * @param {number} openDelayMs - Delay used to let Chrome close the popup before creating the tab.
  * @returns {Promise<object>} Operation result.
  */
@@ -841,7 +842,8 @@ function updateSocketStatus(message) {
 
 /**
  * Ask the offscreen document to own or refresh the LiveReload WebSocket.
- * @param {any} options - Optional connection context (startup/manual/reconnect).
+ * Rebuilding the offscreen document on delivery failure repairs a stale bridge without touching page state.
+ * @param {{reason?:string,forceReconnect?:boolean}} options - Optional connection context (startup/manual/reconnect).
  * @returns {Promise<void>} Completes after the offscreen context acknowledged the request.
  */
 async function connectSocket(options = {}) {
@@ -883,7 +885,7 @@ async function connectSocket(options = {}) {
 
 /**
  * Keep offscreen WebSocket ownership alive after service-worker wakeups.
- * @param {any} options - Keepalive context from tab/content events.
+ * @param {{trigger?:string}} options - Keepalive context from tab/content events.
  * @returns {Promise<void>} Ensures the offscreen context has the current socket URL.
  */
 async function ensureSocketConnection(options = {}) {
@@ -1030,6 +1032,7 @@ function scheduleSocketEventFlush() {
       return flushPromise;
     }
 
+    // Release a wedged batch so later LiveReload events are not blocked forever.
     socketBatchGeneration += 1;
     socketBatchInFlight = false;
     socketBatchStartedAt = 0;
@@ -1042,7 +1045,7 @@ function scheduleSocketEventFlush() {
 
 /**
  * Process queued socket events as one batch and apply one aggregated refresh per tab/file type.
- * @returns {Promise<void>} Completes after tab sync/reload actions are dispatched.
+ * @returns {Promise<void>} Completes after queued waiter promises are resolved.
  */
 async function flushSocketEventBatch() {
   if (socketBatchInFlight || pendingSocketEvents.length === 0) {

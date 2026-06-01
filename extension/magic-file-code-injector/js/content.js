@@ -12,7 +12,7 @@
 
   /**
    * Compute a stable content hash used to skip redundant CSS/JS reinjection.
-   * @param {any} value - Raw value to sanitize or normalize before runtime usage.
+   * @param {string} value - Source text to hash.
    * @returns {string} Stable hex hash used to detect content changes.
    */
   function hashString(value) {
@@ -28,7 +28,7 @@
 
   /**
    * Find injected elements by marker attribute for cleanup/update operations.
-   * @param {any} attributeName - DOM attribute used as marker for injected assets.
+   * @param {string} attributeName - DOM attribute used as marker for injected assets.
    * @returns {Element[]} Matching DOM nodes carrying the requested marker attribute.
    */
   function queryByAttribute(attributeName) {
@@ -45,8 +45,8 @@
 
   /**
    * Find a previously injected element by file id marker.
-   * @param {any} attributeName - DOM attribute used as marker for injected assets.
-   * @param {any} fileId - Stable manifest file identifier (type:path).
+   * @param {string} attributeName - DOM attribute used as marker for injected assets.
+   * @param {string} fileId - Stable manifest file identifier (type:path).
    * @returns {Element|null} Previously injected node for a file id.
    */
   function findById(attributeName, fileId) {
@@ -55,8 +55,8 @@
 
   /**
    * Append a cache-busting hash query parameter to force browser fetch refresh.
-   * @param {any} urlValue - URL-like value to parse or normalize.
-   * @param {any} contentHash - Hash used for cache-busting and change detection.
+   * @param {string} urlValue - URL-like value to parse or normalize.
+   * @param {string} contentHash - Hash used for cache-busting and change detection.
    * @returns {string} URL with `mfci_hash` cache-busting query parameter.
    */
   function appendHashToUrl(urlValue, contentHash) {
@@ -71,8 +71,8 @@
 
   /**
    * Report JS injection errors back to background script for user-visible diagnostics.
-   * @param {any} fileId - Stable manifest file identifier (type:path).
-   * @param {any} errorMessage - Human-readable error description sent to background diagnostics.
+   * @param {string} fileId - Stable manifest file identifier (type:path).
+   * @param {string} errorMessage - Human-readable error description sent to background diagnostics.
    * @returns {void} Best-effort error notification to background script.
    */
   function notifyScriptError(fileId, errorMessage) {
@@ -83,7 +83,7 @@
         error: errorMessage,
       });
     } catch (_error) {
-      // No-op
+      // Error reporting is best effort; CSS/JS injection should not fail because diagnostics failed.
     }
   }
 
@@ -97,9 +97,9 @@
 
   /**
    * Log extension events into page console for developer feedback during live editing.
-   * @param {any} level - Log severity level used by page console bridge.
-   * @param {any} message - Runtime message payload received from UI/content/background.
-   * @param {any} context - Structured log context appended to console events.
+   * @param {"info"|"log"|"warn"|"error"} level - Log severity level used by page console bridge.
+   * @param {string} message - Console message text.
+   * @param {object} [context] - Structured log context appended to console events.
    * @returns {void} Writes a formatted log event to page console.
    */
   function logToPageConsole(level, message, context) {
@@ -153,7 +153,7 @@
   /**
    * Apply or refresh one CSS file in-place without full page reload.
    * @param {any} file - Manifest or build file descriptor currently processed.
-   * @param {any} syncReason - Sync reason used for diagnostics and message tracing.
+   * @param {string} syncReason - Sync reason used for diagnostics and message tracing.
    * @returns {void} Applies or refreshes one CSS file in DOM.
    */
   function applyCssFile(file, syncReason) {
@@ -186,7 +186,8 @@
   /**
    * Inject one JS file as script tag and re-run only when content changed.
    * @param {any} file - Manifest or build file descriptor currently processed.
-   * @returns {void} Injects one JS file in DOM when content changed.
+   * @param {{logRefresh?:boolean}} options - Logging options for load-sync versus hot-refresh flows.
+   * @returns {boolean} True when a script element was injected.
    */
   function executeJsFile(file, options = {}) {
     const rootNode = getRootNode();
@@ -201,7 +202,6 @@
       return false;
     }
 
-    // Remove previous tag first to force browser re-evaluation when the content hash changes.
     removeJsFile(file.id);
 
     const scriptElement = document.createElement("script");
@@ -218,7 +218,7 @@
       return false;
     }
 
-    // Use a real script URL (not inline text/blob) to stay compatible with strict CSP policies.
+    // Real script URLs are more CSP-compatible than inline text or blob URLs on production pages.
     scriptElement.src = appendHashToUrl(sourceUrl, contentHash);
     scriptElement.async = false;
 
@@ -284,7 +284,7 @@
 
   /**
    * Remove an injected JS file by id and clear its execution hash.
-   * @param {any} fileId - Stable manifest file identifier (type:path).
+   * @param {string} fileId - Stable manifest file identifier (type:path).
    * @returns {void} Removes injected JS nodes and execution cache for one id.
    */
   function removeJsFile(fileId) {
@@ -303,8 +303,8 @@
 
   /**
    * Remove stale injected assets no longer present in desired state.
-   * @param {any} desiredCssIds - Set of CSS file IDs that must remain injected.
-   * @param {any} desiredJsIds - Set of JS file IDs that must remain injected.
+   * @param {Set<string>} desiredCssIds - Set of CSS file IDs that must remain injected.
+   * @param {Set<string>} desiredJsIds - Set of JS file IDs that must remain injected.
    * @returns {void} Removes injected assets not present in desired sets.
    */
   function cleanupFiles(desiredCssIds, desiredJsIds) {
@@ -333,7 +333,7 @@
 
   /**
    * Apply full desired file state sent by background script to the current page.
-   * @param {any} payload - Message or payload object exchanged between extension components.
+   * @param {object} payload - `MFCI_APPLY_STATE` payload from the background script.
    * @returns {void} Applies background sync payload to current page DOM.
    */
   function applyState(payload) {
@@ -391,7 +391,7 @@
           void chrome.runtime.lastError;
         });
       } catch (_error) {
-        // No-op
+        // The next interval can retry after Chrome recreates the extension context.
       }
     };
 
@@ -409,7 +409,7 @@
         void chrome.runtime.lastError;
       });
     } catch (_error) {
-      // No-op
+      // Initial sync is best effort; later heartbeat or popup interactions can recover.
     }
   }
 

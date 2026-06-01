@@ -86,6 +86,9 @@ function loadConfigFromFile(configPath, cwd) {
  * @param {string} [options.configPath] - Config path relative to cwd.
  * @param {object} [options.overrides] - Final overrides (highest precedence).
  * @returns {object} Fully merged runtime config.
+ * @throws {Error} Propagates errors thrown while requiring the project config file.
+ * @example
+ * const config = loadRuntimeConfig({ cwd: process.cwd(), overrides: { port: 35888 } });
  */
 function loadRuntimeConfig(options = {}) {
     const cwd = options.cwd || process.cwd();
@@ -96,8 +99,10 @@ function loadRuntimeConfig(options = {}) {
 
 /**
  * Extract build section from the full runtime config while keeping it clone-safe.
- * @param {any} runtimeConfig - Full merged runtime config.
+ * @param {object} runtimeConfig - Full merged runtime config.
  * @returns {object} Build section only.
+ * @example
+ * const buildConfig = resolveBuildConfig(loadRuntimeConfig({ cwd: process.cwd() }));
  */
 function resolveBuildConfig(runtimeConfig) {
     const config = isPlainObject(runtimeConfig) ? runtimeConfig : {};

@@ -72,6 +72,8 @@ function formatPath(value, options = {}) {
  * Build one structured log line with prefix + severity level.
  * @param {object} options - Log rendering options.
  * @returns {string} Structured and optionally colorized log line.
+ * @example
+ * formatLogLine({ prefix: '[mfci]', level: 'success', message: 'Build done', useColor: false });
  */
 function formatLogLine(options = {}) {
     const level = LEVEL_STYLE[options.level] ? options.level : 'info';

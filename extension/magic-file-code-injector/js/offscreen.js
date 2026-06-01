@@ -1,4 +1,5 @@
 (() => {
+  // The offscreen document owns the WebSocket because MV3 service workers are allowed to sleep.
   const LR_PROTOCOLS = [
     "http://livereload.com/protocols/official-7",
     "http://livereload.com/protocols/official-8",
@@ -47,6 +48,11 @@
     }
   }
 
+  /**
+   * Send one message to the background service worker and normalize failures for retryable queues.
+   * @param {any} message - Runtime message sent to the background script.
+   * @returns {Promise<{ok:boolean,error?:string,response?:any}>} Delivery status.
+   */
   function sendToBackground(message) {
     return new Promise((resolve) => {
       try {
@@ -135,6 +141,10 @@
     logToBrowserConsole("warn", `[mfci] WebSocket connection lost (${reason}). Reconnecting automatically.`);
   }
 
+  /**
+   * Reconnect forever: fast first for local-server restarts, then slow to avoid noisy background work.
+   * @returns {void} Schedules the next reconnect attempt.
+   */
   function scheduleReconnect() {
     if (socketConnected || !socketUrl) {
       stopReconnectLoop();
@@ -186,6 +196,12 @@
     );
   }
 
+  /**
+   * Send LiveReload `info` frames as an application-level keepalive.
+   * Browser WebSocket readyState can stay OPEN after network sleep, so writes are the useful health check.
+   * @param {WebSocket} currentSocket - Socket instance currently owned by the offscreen document.
+   * @returns {void}
+   */
   function sendSocketInfo(currentSocket) {
     sendSocketPayload(
       currentSocket,
@@ -216,6 +232,11 @@
     scheduleReconnect();
   }
 
+  /**
+   * Keep long-lived sockets healthy and recycle old connections before stale OPEN states accumulate.
+   * @param {WebSocket} currentSocket - Socket instance currently owned by the offscreen document.
+   * @returns {void}
+   */
   function runSocketHealthCheck(currentSocket) {
     if (socket !== currentSocket) {
       return;
@@ -252,6 +273,10 @@
     }, BACKGROUND_DELIVERY_RETRY_MS);
   }
 
+  /**
+   * Deliver socket messages sequentially and wait for the background batch to finish before dropping them.
+   * @returns {Promise<void>}
+   */
   async function flushBackgroundMessages() {
     if (backgroundDeliveryInFlight) {
       return;
@@ -285,6 +310,11 @@
     }
   }
 
+  /**
+   * Queue LiveReload payloads so service-worker wakeup races do not lose refresh signals.
+   * @param {string} data - Raw WebSocket payload.
+   * @returns {void}
+   */
   function queueBackgroundSocketMessage(data) {
     pendingBackgroundMessages.push({
       type: "MFCI_OFFSCREEN_SOCKET_MESSAGE",
@@ -340,7 +370,7 @@
       try {
         previousSocket.close();
       } catch (_error) {
-        // No-op
+        // Replacing the socket should continue even if the stale instance refuses to close.
       }
     }
 

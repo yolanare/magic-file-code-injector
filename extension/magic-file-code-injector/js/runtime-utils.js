@@ -2,7 +2,7 @@
   const RUNTIME_MESSAGE_TIMEOUT_MS = 5000;
 
   /**
-   * Wrap `chrome.runtime.sendMessage` in Promise form so popup/options logic stays linear and testable.
+   * Wrap `chrome.runtime.sendMessage` in Promise form with a timeout so popup/options controls cannot hang silently.
    * @param {any} payload - Runtime message payload.
    * @returns {Promise<any>} Background response payload.
    */

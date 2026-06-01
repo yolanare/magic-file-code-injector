@@ -29,8 +29,8 @@ async function updateEnabledFileSelection(nextSelection) {
 
 /**
  * Split one manifest URL path into file name + parent folder for clearer display.
- * @param {any} inputPath - Manifest path (for example `/js/test.js`).
- * @param {any} fallbackName - Fallback label when path parsing fails.
+ * @param {string} inputPath - Manifest path (for example `/js/test.js`).
+ * @param {string} fallbackName - Fallback label when path parsing fails.
  * @returns {{fileName:string,parentPath:string}} Display-safe parts.
  */
 function resolveFileDisplayParts(inputPath, fallbackName) {
@@ -63,8 +63,8 @@ function resolveFileDisplayParts(inputPath, fallbackName) {
 
 /**
  * Render one popup file row with toggle behavior bound to host settings.
- * @param {any} file - Manifest or build file descriptor currently processed.
- * @param {any} enabledFileIds - Enabled file IDs for the current host.
+ * @param {object} file - Manifest or build file descriptor currently processed.
+ * @param {Set<string>} enabledFileIds - Enabled file IDs for the current host.
  * @returns {HTMLElement} Popup row bound to one manifest file.
  */
 function createFileRow(file, enabledFileIds) {
@@ -118,8 +118,8 @@ function createFileRow(file, enabledFileIds) {
 
 /**
  * Render one warning row for a file ID still enabled in host settings but not found in current manifest.
- * @param {any} fileId - Stable manifest file identifier (type:path).
- * @param {any} enabledFileIds - Enabled file IDs for the current host.
+ * @param {string} fileId - Stable manifest file identifier (type:path).
+ * @param {Set<string>} enabledFileIds - Enabled file IDs for the current host.
  * @returns {HTMLElement} Warning row for a missing enabled file.
  */
 function createMissingFileRow(fileId, enabledFileIds) {

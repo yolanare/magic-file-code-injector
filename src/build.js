@@ -63,9 +63,11 @@ function normalizeCopyTasks(value, cwd) {
 
 /**
  * Normalize build/runtime config to one deterministic structure used by build and dev-server.
- * @param {any} inputConfig - Runtime config object.
- * @param {any} options - Runtime options.
+ * @param {object} inputConfig - Runtime config object.
+ * @param {object} options - Runtime options.
  * @returns {object} Normalized build config.
+ * @example
+ * const config = normalizeBuildConfig({ rootDir: 'dev-mfci' }, { cwd: process.cwd() });
  */
 function normalizeBuildConfig(inputConfig = {}, options = {}) {
     const cwd = options.cwd || process.cwd();
@@ -702,6 +704,7 @@ async function runStandaloneCssBuild(config, scope, changedOutputs, cssAssets) {
         return true;
     });
 
+    // Sass partials can be imported by any entrypoint in the folder, so rebuild every candidate when one changes.
     const selectedCandidates = selectCandidatesForChangedState(candidates, changedState, (state) => path.basename(state.path).startsWith('_'));
 
     let count = 0;
@@ -893,6 +896,7 @@ async function runModulesBuild(config, scope, changedOutputs) {
     const changedState = resolveChangedCandidateState(config.changedSourcePath, sourceDir, allowedExtensions);
     const selectedCandidates = selectCandidatesForChangedState(candidates, changedState, (state) => {
         const isSassPartial = (state.extension === '.scss' || state.extension === '.sass') && path.basename(state.path).startsWith('_');
+        // Module Sass partials have unknown import reach inside the module tree.
         return inferModuleSourceType(config, state.path) === 'css' && isSassPartial;
     });
     const moduleCssAssets = new Set();
@@ -1334,7 +1338,6 @@ async function runMergeSameName(config, changedOutputs) {
     await fsPromises.mkdir(config.paths.buildMergeDir, { recursive: true });
 
     for (const { name, orderedParts } of mergeCandidates) {
-
         const mergedText = `${(await Promise.all(orderedParts.map((part) => resolveMergedPartContent(part.filePath))))
             .map((entry) => String(entry ?? '').trim())
             .filter(Boolean)
@@ -1429,9 +1432,11 @@ async function runClean(config) {
 
 /**
  * Build a targeted HTML export for one changed standalone output file.
- * @param {any} normalizedConfig - Normalized build config.
+ * @param {object} normalizedConfig - Normalized build config.
  * @param {string} outputFilePath - Changed output file path.
  * @returns {Promise<number>} Number of changed HTML wrapper files.
+ * @example
+ * await exportOutputFileAsHtml(config, 'dev-mfci/build/css/app.css');
  */
 async function exportOutputFileAsHtml(normalizedConfig, outputFilePath) {
     const config = normalizeBuildConfig(normalizedConfig, {
@@ -1474,9 +1479,12 @@ async function exportOutputFileAsHtml(normalizedConfig, outputFilePath) {
 
 /**
  * Run the full build pipeline.
- * @param {any} inputConfig - Runtime config object.
- * @param {any} options - Runtime options.
+ * @param {object} inputConfig - Runtime config object.
+ * @param {object} options - Runtime options.
  * @returns {Promise<{config:object,stats:object,changedOutputs:string[]}>} Build result.
+ * @throws {Error} Propagates filesystem, Sass and esbuild failures.
+ * @example
+ * const result = await runBuild({ rootDir: 'dev-mfci' }, { cwd: process.cwd() });
  */
 async function runBuild(inputConfig = {}, options = {}) {
     const config = normalizeBuildConfig(inputConfig, options);

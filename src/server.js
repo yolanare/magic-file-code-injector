@@ -32,9 +32,11 @@ const MIME_TYPES = {
 
 /**
  * Normalize dev-server config for deterministic runtime behavior.
- * @param {any} inputConfig - Runtime config object.
- * @param {any} options - Runtime options.
+ * @param {object} inputConfig - Runtime config object.
+ * @param {object} options - Runtime options.
  * @returns {object} Normalized server config.
+ * @example
+ * const config = normalizeConfig({ rootDir: 'dev-mfci', port: 35888 }, { cwd: process.cwd() });
  */
 function normalizeConfig(inputConfig = {}, options = {}) {
     const cwd = options.cwd || process.cwd();
@@ -490,9 +492,12 @@ function isExtensionRefreshableOutput(filePath, config) {
 
 /**
  * Start HTTP + LiveReload services and bind build/reload workflow.
- * @param {any} inputConfig - Runtime config object.
- * @param {any} options - Runtime options.
+ * @param {object} inputConfig - Runtime config object.
+ * @param {object} options - Runtime options.
  * @returns {object} Running handles.
+ * @throws {Error} Throws when no watchable dev directory exists or the HTTP/WS server cannot start.
+ * @example
+ * const server = startDevServer({ rootDir: 'dev-mfci', port: 35888 }, { cwd: process.cwd() });
  */
 function startDevServer(inputConfig = {}, options = {}) {
     const config = normalizeConfig(inputConfig, options);
@@ -684,6 +689,7 @@ function startDevServer(inputConfig = {}, options = {}) {
     originalRefresh = lrServer.refresh.bind(lrServer);
     lrServer.refresh = (filePath) => {
         if (isBuildSourcePath(filePath, config)) {
+            // LiveReload watches source files, but the extension must receive built CSS/JS output paths.
             runBuildFromDevServer('source-change', filePath).catch(() => {});
             return;
         }
@@ -710,7 +716,7 @@ function startDevServer(inputConfig = {}, options = {}) {
             }
             lrServer.close();
         } catch (_error) {
-            // Ignore shutdown errors.
+            // Signal handlers can race with partial startup or prior close; shutdown stays best effort.
         }
     };
 

@@ -10,7 +10,7 @@ let model = null;
 
 /**
  * Render the enabled-file list shown in options for one host.
- * @param {any} enabledFileIds - Enabled file IDs for the current host.
+ * @param {string[]} enabledFileIds - Enabled file IDs for the current host.
  * @returns {HTMLElement} Rendered block listing enabled files.
  */
 function createEnabledFilesBlock(enabledFileIds) {
@@ -46,8 +46,8 @@ function createEnabledFilesBlock(enabledFileIds) {
 
 /**
  * Render one host settings row with deletion action in options UI.
- * @param {any} hostKey - Domain key used to isolate per-site settings.
- * @param {any} hostState - Per-site configuration including enabled files and JS refresh mode.
+ * @param {string} hostKey - Domain key used to isolate per-site settings.
+ * @param {object} hostState - Per-site configuration including enabled files and JS refresh mode.
  * @returns {HTMLElement} Rendered row for one host settings entry.
  */
 function createSiteRow(hostKey, hostState) {
@@ -105,7 +105,7 @@ function createSiteRow(hostKey, hostState) {
 
 /**
  * Render all saved host settings in options UI.
- * @param {any} hosts - Map of host states keyed by domain.
+ * @param {Record<string, object>} hosts - Map of host states keyed by domain.
  * @returns {void} Renders complete host settings list.
  */
 function renderSites(hosts) {

@@ -18,7 +18,7 @@
 
   /**
    * Deduplicate user settings arrays before persistence to keep storage deterministic and compact.
-   * @param {any} values - Candidate list of values loaded from storage or messages.
+   * @param {unknown} values - Candidate list of values loaded from storage or messages.
    * @returns {string[]} Deduplicated string list.
    */
   function uniqueStrings(values) {
@@ -30,7 +30,7 @@
 
   /**
    * Normalize per-host settings to guard runtime flows from malformed storage payloads.
-   * @param {any} input - Raw host state from storage.
+   * @param {unknown} input - Raw host state from storage.
    * @returns {object} Safe host state.
    */
   function normalizeHostState(input) {
@@ -46,7 +46,7 @@
 
   /**
    * Normalize the complete extension state object loaded from storage.
-   * @param {any} input - Raw storage payload.
+   * @param {unknown} input - Raw storage payload.
    * @returns {object} Safe state object.
    */
   function normalizeState(input) {
@@ -74,7 +74,7 @@
 
   /**
    * Build local server origin from the persisted global state.
-   * @param {any} globalState - Global host/port settings.
+   * @param {{host:string,port:number}} globalState - Global host/port settings.
    * @returns {string} HTTP origin.
    */
   function getServerOrigin(globalState) {
@@ -83,7 +83,7 @@
 
   /**
    * Build manifest URL from persisted global state.
-   * @param {any} globalState - Global host/port settings.
+   * @param {{host:string,port:number}} globalState - Global host/port settings.
    * @returns {string} Absolute manifest URL.
    */
   function getManifestUrl(globalState) {
@@ -92,7 +92,7 @@
 
   /**
    * Normalize changed paths from LiveReload payloads for deterministic comparisons.
-   * @param {any} value - Path or URL value.
+   * @param {unknown} value - Path or URL value.
    * @returns {string} Lower-cased normalized path.
    */
   function normalizeChangedPath(value) {
@@ -127,7 +127,7 @@
 
   /**
    * Infer file type from changed path extension.
-   * @param {any} value - Path-like value.
+   * @param {unknown} value - Path-like value.
    * @returns {"css"|"js"|""} File type key.
    */
   function inferFileTypeFromPath(value) {
@@ -143,7 +143,7 @@
 
   /**
    * Extract a normalized path from one manifest file id (`type:/path/file.ext`).
-   * @param {any} fileId - Manifest id.
+   * @param {unknown} fileId - Manifest id.
    * @returns {string} Normalized path or empty string.
    */
   function normalizePathFromFileId(fileId) {
@@ -161,7 +161,7 @@
 
   /**
    * Extract hostname as stable settings key for one URL.
-   * @param {any} urlValue - URL candidate.
+   * @param {string} urlValue - URL candidate.
    * @returns {string|null} Host key or null when URL is unsupported.
    */
   function getHostKey(urlValue) {
@@ -178,7 +178,7 @@
 
   /**
    * Normalize one manifest file entry to a runtime-safe shape.
-   * @param {any} file - Raw manifest entry.
+   * @param {unknown} file - Raw manifest entry.
    * @returns {object|null} Normalized descriptor or null when invalid.
    */
   function normalizeManifestFile(file) {
@@ -211,8 +211,8 @@
 
   /**
    * Resolve one manifest file path to an absolute URL fetchable by the extension.
-   * @param {any} file - Normalized manifest file descriptor.
-   * @param {any} origin - Server origin.
+   * @param {{path:string}} file - Normalized manifest file descriptor.
+   * @param {string} origin - Server origin.
    * @returns {string} Absolute URL.
    */
   function resolveFileUrl(file, origin) {
@@ -253,7 +253,7 @@
 
   /**
    * Sort host entries to keep deterministic rendering across options/popup refreshes.
-   * @param {any} hosts - Host map.
+   * @param {Record<string, object>} hosts - Host map.
    * @returns {Array<[string, object]>} Sorted host entries.
    */
   function sortedHostEntries(hosts) {
@@ -264,7 +264,7 @@
 
   /**
    * Reduce host state to options-safe fields exposed to the UI.
-   * @param {any} hostState - Raw host state.
+   * @param {unknown} hostState - Raw host state.
    * @returns {{enabledFileIds:string[],autoRefreshJs:boolean}} Options-safe host projection.
    */
   function toOptionsHostState(hostState) {

@@ -21,7 +21,7 @@ Options:
 
 /**
  * Parse CLI flags into a normalized options object used by command execution.
- * @param {any} argv - Command-line arguments passed to the CLI entrypoint.
+ * @param {string[]} argv - Command-line arguments passed to the CLI entrypoint.
  * @returns {object} Parsed command-line options.
  */
 function parseArgs(argv) {
@@ -63,9 +63,12 @@ function parseArgs(argv) {
 
 /**
  * Run the build CLI entrypoint with optional command-line overrides.
- * @param {any} argv - Command-line arguments passed to the CLI entrypoint.
- * @param {any} runtimeOptions - Runtime overrides used by test harnesses or bin wrappers.
+ * @param {string[]} argv - Command-line arguments passed to the CLI entrypoint.
+ * @param {object} runtimeOptions - Runtime overrides used by test harnesses or bin wrappers.
  * @returns {Promise<object|null>} Build result, or null when help is requested.
+ * @throws {Error} Propagates config loading or build failures.
+ * @example
+ * await runBuildCli(['--config', 'mfci.config.cjs', '--clean'], { cwd: process.cwd() });
  */
 async function runBuildCli(argv = process.argv.slice(2), runtimeOptions = {}) {
     const cwd = runtimeOptions.cwd || process.cwd();
