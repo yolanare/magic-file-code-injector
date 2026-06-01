@@ -332,11 +332,20 @@ async function buildSyncPayload(state, hostKey, hostState, options = {}) {
   const activeManifestFiles = manifest.files.filter((file) => hostState.enabledFileIds.includes(file.id));
   const requestedFileIds = uniqueStrings(Array.isArray(options.fileIds) ? options.fileIds : []);
   const requestedSet = new Set(requestedFileIds);
-  const isPartialRequest = requestedSet.size > 0;
+  const requestedFileTypes = uniqueStrings(Array.isArray(options.fileTypes) ? options.fileTypes : []).filter(
+    (fileType) => fileType === "css" || fileType === "js"
+  );
+  const requestedTypeSet = new Set(requestedFileTypes);
+  const hasFileIdFilter = requestedSet.size > 0;
+  const hasFileTypeFilter = requestedTypeSet.size > 0;
+  const isPartialRequest = hasFileIdFilter || hasFileTypeFilter;
   const isPartial = injectionEnabled ? isPartialRequest : false;
   const filesToSync =
     injectionEnabled ?
-      isPartialRequest ? activeManifestFiles.filter((file) => requestedSet.has(file.id))
+      isPartialRequest ?
+        activeManifestFiles.filter(
+          (file) => (!hasFileIdFilter || requestedSet.has(file.id)) && (!hasFileTypeFilter || requestedTypeSet.has(file.type))
+        )
       : activeManifestFiles
     : [];
 
@@ -1221,6 +1230,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         // Keepalive actively repairs dropped WebSocket sessions without popup interaction.
         await ensureSocketConnection({ trigger: "keepalive" });
         return { ok: true };
+      case "MFCI_CONTENT_READY":
+        ensureSocketConnection({ trigger: "content-ready" }).catch(() => {});
+        if (sender && sender.tab && typeof sender.tab.id === "number") {
+          const cssSynced = await syncTab(sender.tab.id, "content-ready-css", { fileTypes: ["css"] });
+          const jsSynced = await syncTab(sender.tab.id, "content-ready-js", { fileTypes: ["js"] });
+          return { ok: cssSynced || jsSynced };
+        }
+        return { ok: false, error: "Missing sender tab." };
       case "MFCI_JS_INJECTION_ERROR":
         return recordInjectionError(sender, message);
       default:

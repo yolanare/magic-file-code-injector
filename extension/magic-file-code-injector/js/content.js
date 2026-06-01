@@ -6,6 +6,8 @@
   const BACKGROUND_HEARTBEAT_MS = 5000;
 
   const executedScriptHashes = new Map();
+  const pendingJsFiles = new Map();
+  let pendingJsFlushScheduled = false;
 
   /**
    * Compute a stable content hash used to skip redundant CSS/JS reinjection.
@@ -91,6 +93,14 @@
     } catch (_error) {
       // No-op
     }
+  }
+
+  /**
+   * Return whether DOM parsing is ready enough for user scripts to run.
+   * @returns {boolean} True once DOMContentLoaded has fired or is imminent.
+   */
+  function isDomReadyForJs() {
+    return document.readyState === "interactive" || document.readyState === "complete";
   }
 
   /**
@@ -191,6 +201,50 @@
   }
 
   /**
+   * Execute queued JS files once DOM parsing is complete enough.
+   * @returns {void} Flushes pending JS files when possible.
+   */
+  function flushPendingJsFiles() {
+    if (!isDomReadyForJs()) {
+      return;
+    }
+
+    const files = Array.from(pendingJsFiles.values());
+    pendingJsFiles.clear();
+
+    for (const file of files) {
+      executeJsFile(file);
+    }
+  }
+
+  /**
+   * Queue JS during early page load so CSS can apply first and scripts run after DOM parsing.
+   * @param {any} file - Manifest or build file descriptor currently processed.
+   * @returns {void} Queues or executes the JS file depending on DOM readiness.
+   */
+  function applyJsFile(file) {
+    if (isDomReadyForJs()) {
+      executeJsFile(file);
+      return;
+    }
+
+    pendingJsFiles.set(file.id, file);
+    if (pendingJsFlushScheduled) {
+      return;
+    }
+
+    pendingJsFlushScheduled = true;
+    document.addEventListener(
+      "DOMContentLoaded",
+      () => {
+        pendingJsFlushScheduled = false;
+        flushPendingJsFiles();
+      },
+      { once: true }
+    );
+  }
+
+  /**
    * Remove an injected CSS file by id.
    * @param {any} fileId - Stable manifest file identifier (type:path).
    * @returns {void} Removes one injected CSS node by id.
@@ -208,6 +262,8 @@
    * @returns {void} Removes injected JS nodes and execution cache for one id.
    */
   function removeJsFile(fileId) {
+    pendingJsFiles.delete(fileId);
+
     for (const scriptElement of queryByAttribute(SCRIPT_ATTR)) {
       if (scriptElement.getAttribute(SCRIPT_ATTR) !== fileId) {
         continue;
@@ -236,8 +292,15 @@
     for (const scriptElement of queryByAttribute(SCRIPT_ATTR)) {
       const fileId = scriptElement.getAttribute(SCRIPT_ATTR);
       if (!desiredJsIds.has(fileId)) {
+        pendingJsFiles.delete(fileId);
         removeScriptElement(scriptElement);
         executedScriptHashes.delete(fileId);
+      }
+    }
+
+    for (const fileId of pendingJsFiles.keys()) {
+      if (!desiredJsIds.has(fileId)) {
+        pendingJsFiles.delete(fileId);
       }
     }
   }
@@ -269,7 +332,7 @@
 
       if (file.type === "js") {
         desiredJsIds.add(file.id);
-        executeJsFile(file);
+        applyJsFile(file);
       }
     }
 
@@ -301,6 +364,20 @@
     setInterval(sendHeartbeat, BACKGROUND_HEARTBEAT_MS);
   }
 
+  /**
+   * Ask background for the current state as soon as the content script starts.
+   * @returns {void} Sends a best-effort initial sync request.
+   */
+  function requestInitialSync() {
+    try {
+      chrome.runtime.sendMessage({ type: "MFCI_CONTENT_READY" }, () => {
+        void chrome.runtime.lastError;
+      });
+    } catch (_error) {
+      // No-op
+    }
+  }
+
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (!message || typeof message.type !== "string") {
       return false;
@@ -328,5 +405,6 @@
     return false;
   });
 
+  requestInitialSync();
   startBackgroundHeartbeat();
 })();
