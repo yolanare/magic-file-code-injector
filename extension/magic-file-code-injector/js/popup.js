@@ -287,8 +287,13 @@ refreshButtonElement.addEventListener("click", async () => {
   }
 });
 
-openOptionsButtonElement.addEventListener("click", () => {
-  chrome.runtime.openOptionsPage();
+openOptionsButtonElement.addEventListener("click", async () => {
+  try {
+    await sendRuntimeMessage({ type: "POPUP_OPEN_OPTIONS" });
+    window.close();
+  } catch (error) {
+    setStatusMessage(statusMessageElement, String(error.message || error), true);
+  }
 });
 
 /**

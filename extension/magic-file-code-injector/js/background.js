@@ -30,6 +30,8 @@ const TAB_MESSAGE_TIMEOUT_MS = 3000;
 const TAB_RELOAD_TIMEOUT_MS = 3000;
 const RUNTIME_MESSAGE_TIMEOUT_MS = 3000;
 const SOCKET_EVENT_BATCH_MAX_RUNTIME_MS = 10000;
+const OPTIONS_OPEN_DELAY_MS = 200;
+const OPTIONS_REFOCUS_DELAY_MS = 100;
 
 let offscreenCreatePromise = null;
 let initialLoadSyncedTabIds = new Set();
@@ -107,6 +109,62 @@ function tabGet(tabId) {
         return;
       }
       resolve(tab);
+    });
+  });
+}
+
+/**
+ * Promisify chrome.tabs.create for extension-owned navigation actions.
+ * @param {any} createProperties - Chrome tab creation descriptor.
+ * @returns {Promise<chrome.tabs.Tab>} Created tab descriptor.
+ */
+function tabCreate(createProperties) {
+  return new Promise((resolve, reject) => {
+    chrome.tabs.create(createProperties, (tab) => {
+      const runtimeError = chrome.runtime.lastError;
+      if (runtimeError) {
+        reject(new Error(runtimeError.message));
+        return;
+      }
+      resolve(tab);
+    });
+  });
+}
+
+/**
+ * Promisify chrome.tabs.update so delayed tab activation is deterministic.
+ * @param {number} tabId - Chrome tab identifier to activate.
+ * @param {any} updateProperties - Chrome tab update descriptor.
+ * @returns {Promise<chrome.tabs.Tab>} Updated tab descriptor.
+ */
+function tabUpdate(tabId, updateProperties) {
+  return new Promise((resolve, reject) => {
+    chrome.tabs.update(tabId, updateProperties, (tab) => {
+      const runtimeError = chrome.runtime.lastError;
+      if (runtimeError) {
+        reject(new Error(runtimeError.message));
+        return;
+      }
+      resolve(tab);
+    });
+  });
+}
+
+/**
+ * Promisify chrome.windows.update for foregrounding the options tab window.
+ * @param {number} windowId - Chrome window identifier.
+ * @param {any} updateInfo - Chrome window update descriptor.
+ * @returns {Promise<void>} Resolves once Chrome accepts the update.
+ */
+function windowUpdate(windowId, updateInfo) {
+  return new Promise((resolve, reject) => {
+    chrome.windows.update(windowId, updateInfo, () => {
+      const runtimeError = chrome.runtime.lastError;
+      if (runtimeError) {
+        reject(new Error(runtimeError.message));
+        return;
+      }
+      resolve();
     });
   });
 }
@@ -487,6 +545,30 @@ async function applyToCurrentTab(reason) {
   }
 
   await syncTab(activeTab.id, reason);
+}
+
+/**
+ * Open the extension options page and keep it active after the popup closes.
+ * @param {number} openDelayMs - Delay used to let Chrome close the popup before creating the tab.
+ * @returns {Promise<object>} Operation result.
+ */
+async function openOptionsPageTab(openDelayMs = 0) {
+  if (openDelayMs > 0) {
+    await delay(openDelayMs);
+  }
+
+  const tab = await tabCreate({ active: true, url: chrome.runtime.getURL("options.html") });
+  await windowUpdate(tab.windowId, { focused: true });
+
+  setTimeout(() => {
+    tabUpdate(tab.id, { active: true })
+      .then((updatedTab) => windowUpdate(updatedTab.windowId, { focused: true }))
+      .catch((error) => {
+        console.error(`[mfci] Unable to refocus options page: ${String(error.message || error)}`);
+      });
+  }, OPTIONS_REFOCUS_DELAY_MS);
+
+  return { ok: true };
 }
 
 /**
@@ -1275,6 +1357,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return { ok: true };
       case "MFCI_OFFSCREEN_LOG":
         logToBrowserConsole(message.level, message.message);
+        return { ok: true };
+      case "POPUP_OPEN_OPTIONS":
+        openOptionsPageTab(OPTIONS_OPEN_DELAY_MS).catch((error) => {
+          console.error(`[mfci] Unable to open options page: ${String(error.message || error)}`);
+        });
         return { ok: true };
       case "POPUP_OPENED":
         await connectSocket({ reason: "keepalive" }).catch((error) => {
