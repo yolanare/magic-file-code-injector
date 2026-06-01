@@ -4,6 +4,7 @@
   const SCRIPT_ATTR = "data-mfci-script-id";
   const SCRIPT_HASH_ATTR = "data-mfci-script-hash";
   const BACKGROUND_HEARTBEAT_MS = 5000;
+  const CONSOLE_LOG_STYLE = "color: #6080c6;";
 
   const executedScriptHashes = new Map();
   const pendingJsFiles = new Map();
@@ -112,11 +113,12 @@
    */
   function logToPageConsole(level, message, context) {
     const method = level === "error" ? "error" : level === "warn" ? "warn" : "info";
+    const styledMessage = `%c${message}`;
     if (context && typeof context === "object") {
-      console[method](message, context);
+      console[method](styledMessage, CONSOLE_LOG_STYLE, context);
       return;
     }
-    console[method](message);
+    console[method](styledMessage, CONSOLE_LOG_STYLE);
   }
 
   /**
