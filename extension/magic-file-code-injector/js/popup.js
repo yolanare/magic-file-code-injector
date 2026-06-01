@@ -275,8 +275,16 @@ globalInjectionEnabledElement.addEventListener("change", async () => {
 });
 
 refreshButtonElement.addEventListener("click", async () => {
-  await sendRuntimeMessage({ type: "POPUP_FORCE_SYNC" });
-  await refreshModel();
+  try {
+    const response = await sendRuntimeMessage({ type: "POPUP_FORCE_SYNC" });
+    if (!response || response.ok !== true) {
+      setStatusMessage(statusMessageElement, (response && response.error) || "Unable to refresh extension state.", true);
+      return;
+    }
+    await refreshModel();
+  } catch (error) {
+    setStatusMessage(statusMessageElement, String(error.message || error), true);
+  }
 });
 
 openOptionsButtonElement.addEventListener("click", () => {

@@ -28,6 +28,7 @@ const SOCKET_EVENT_BATCH_WINDOW_MS = 150;
 const FETCH_TIMEOUT_MS = 5000;
 const TAB_MESSAGE_TIMEOUT_MS = 3000;
 const TAB_RELOAD_TIMEOUT_MS = 3000;
+const RUNTIME_MESSAGE_TIMEOUT_MS = 3000;
 const SOCKET_EVENT_BATCH_MAX_RUNTIME_MS = 10000;
 
 let offscreenCreatePromise = null;
@@ -200,6 +201,40 @@ function tabReload(tabId) {
 function delay(ms) {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
+  });
+}
+
+/**
+ * Send a runtime message with a hard timeout so popup/background flows cannot hang.
+ * @param {any} message - Runtime message payload.
+ * @param {number} timeoutMs - Timeout duration in milliseconds.
+ * @returns {Promise<any>} Response from the receiving extension context.
+ */
+function runtimeSendMessage(message, timeoutMs = RUNTIME_MESSAGE_TIMEOUT_MS) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timeoutId = setTimeout(() => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      reject(new Error(`runtime.sendMessage timeout after ${timeoutMs}ms.`));
+    }, timeoutMs);
+
+    chrome.runtime.sendMessage(message, (response) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeoutId);
+
+      const runtimeError = chrome.runtime.lastError;
+      if (runtimeError) {
+        reject(new Error(runtimeError.message));
+        return;
+      }
+      resolve(response);
+    });
   });
 }
 
@@ -683,7 +718,7 @@ async function ensureOffscreenDocument() {
     offscreenCreatePromise = chrome.offscreen
       .createDocument({
         url: OFFSCREEN_DOCUMENT_PATH,
-        reasons: ["WORKERS"],
+        reasons: [chrome.offscreen.Reason?.IFRAME_SCRIPTING || "IFRAME_SCRIPTING"],
         justification: "Keep the local LiveReload WebSocket alive while the extension service worker sleeps.",
       })
       .then(() => true)
@@ -698,6 +733,16 @@ async function ensureOffscreenDocument() {
   }
 
   return offscreenCreatePromise;
+}
+
+/**
+ * Drop the current offscreen document so a broken message bridge can be rebuilt.
+ * @returns {Promise<void>} Completes after best-effort offscreen cleanup.
+ */
+async function closeOffscreenDocument() {
+  if (chrome.offscreen && chrome.offscreen.closeDocument && (await hasOffscreenDocument())) {
+    await chrome.offscreen.closeDocument().catch(() => {});
+  }
 }
 
 /**
@@ -728,12 +773,25 @@ async function connectSocket(options = {}) {
     return;
   }
 
-  const response = await runtimeSendMessage({
+  const connectMessage = {
     type: "MFCI_OFFSCREEN_CONNECT",
+    target: "offscreen",
     url: nextSocketUrl,
     reason,
     forceReconnect,
-  });
+  };
+
+  let response;
+  try {
+    response = await runtimeSendMessage(connectMessage);
+  } catch (_error) {
+    await closeOffscreenDocument();
+    if (!(await ensureOffscreenDocument())) {
+      return;
+    }
+    await delay(50);
+    response = await runtimeSendMessage(connectMessage);
+  }
 
   if (response && typeof response === "object") {
     updateSocketStatus(response);
@@ -1188,6 +1246,10 @@ async function recordInjectionError(sender, message) {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message && message.target === "offscreen") {
+    return false;
+  }
+
   (async () => {
     switch (message && message.type) {
       case "POPUP_GET_MODEL":
@@ -1215,12 +1277,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         logToBrowserConsole(message.level, message.message);
         return { ok: true };
       case "POPUP_OPENED":
-        await connectSocket({ reason: "keepalive" });
+        await connectSocket({ reason: "keepalive" }).catch((error) => {
+          socketConnected = false;
+          socketError = String(error.message || error);
+        });
         await applyToCurrentTab("popup-open");
         return { ok: true };
       case "POPUP_FORCE_SYNC":
         // Manual refresh should also force a new WebSocket connection attempt.
-        await connectSocket({ reason: "manual", forceReconnect: true });
+        await connectSocket({ reason: "manual", forceReconnect: true }).catch((error) => {
+          socketConnected = false;
+          socketError = String(error.message || error);
+        });
         await applyToCurrentTab("manual-sync");
         return { ok: true };
       case "MFCI_KEEPALIVE":

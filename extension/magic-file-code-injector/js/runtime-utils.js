@@ -1,4 +1,6 @@
 (() => {
+  const RUNTIME_MESSAGE_TIMEOUT_MS = 5000;
+
   /**
    * Wrap `chrome.runtime.sendMessage` in Promise form so popup/options logic stays linear and testable.
    * @param {any} payload - Runtime message payload.
@@ -6,7 +8,22 @@
    */
   function sendRuntimeMessage(payload) {
     return new Promise((resolve, reject) => {
+      let settled = false;
+      const timeoutId = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        reject(new Error(`runtime.sendMessage timeout after ${RUNTIME_MESSAGE_TIMEOUT_MS}ms.`));
+      }, RUNTIME_MESSAGE_TIMEOUT_MS);
+
       chrome.runtime.sendMessage(payload, (response) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timeoutId);
+
         const runtimeError = chrome.runtime.lastError;
         if (runtimeError) {
           reject(new Error(runtimeError.message));

@@ -17,6 +17,26 @@
   let hasConnectedAtLeastOnce = false;
   let connectionLossLogged = false;
   let lastReason = "startup";
+  let statusWaiters = [];
+
+  function getStatusSnapshot() {
+    return {
+      ok: true,
+      connected: socketConnected,
+      error: socketError,
+      url: socketUrl,
+      reason: lastReason,
+    };
+  }
+
+  function resolveStatusWaiters() {
+    const waiters = statusWaiters;
+    statusWaiters = [];
+
+    for (const resolve of waiters) {
+      resolve(getStatusSnapshot());
+    }
+  }
 
   function sendToBackground(message) {
     try {
@@ -31,16 +51,39 @@
   function postStatus(reason) {
     sendToBackground({
       type: "MFCI_OFFSCREEN_SOCKET_STATUS",
+      target: "background",
       connected: socketConnected,
       error: socketError,
       url: socketUrl,
       reason,
+    });
+    resolveStatusWaiters();
+  }
+
+  function waitForSocketStatus(timeoutMs = 2500) {
+    if (socketConnected || socketError || !socket || socket.readyState !== WebSocket.CONNECTING) {
+      return Promise.resolve(getStatusSnapshot());
+    }
+
+    return new Promise((resolve) => {
+      const timeoutId = setTimeout(() => {
+        statusWaiters = statusWaiters.filter((waiter) => waiter !== resolveOnce);
+        resolve(getStatusSnapshot());
+      }, timeoutMs);
+
+      function resolveOnce(status) {
+        clearTimeout(timeoutId);
+        resolve(status);
+      }
+
+      statusWaiters.push(resolveOnce);
     });
   }
 
   function logToBrowserConsole(level, message) {
     sendToBackground({
       type: "MFCI_OFFSCREEN_LOG",
+      target: "background",
       level,
       message,
     });
@@ -224,29 +267,26 @@
 
       sendToBackground({
         type: "MFCI_OFFSCREEN_SOCKET_MESSAGE",
+        target: "background",
         data: event.data,
       });
     });
   }
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (!message || message.type !== "MFCI_OFFSCREEN_CONNECT") {
+    if (!message || message.target !== "offscreen" || message.type !== "MFCI_OFFSCREEN_CONNECT") {
       return false;
     }
 
-    connectSocket({
-      url: message.url,
-      reason: message.reason,
-      forceReconnect: message.forceReconnect === true,
-    });
+    (async () => {
+      connectSocket({
+        url: message.url,
+        reason: message.reason,
+        forceReconnect: message.forceReconnect === true,
+      });
+      sendResponse(await waitForSocketStatus());
+    })();
 
-    sendResponse({
-      ok: true,
-      connected: socketConnected,
-      error: socketError,
-      url: socketUrl,
-      reason: lastReason,
-    });
-    return false;
+    return true;
   });
 })();
