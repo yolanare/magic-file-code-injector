@@ -81,9 +81,6 @@ async function runBuildCli(argv = process.argv.slice(2), runtimeOptions = {}) {
 
     // `--clean` is an explicit runtime override for local one-off builds.
     if (parsed.clean) {
-        if (!buildConfig.build || typeof buildConfig.build !== 'object') {
-            buildConfig.build = {};
-        }
         buildConfig.build.clean = true;
     }
 

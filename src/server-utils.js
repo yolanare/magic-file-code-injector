@@ -1,6 +1,24 @@
 const path = require('node:path');
 
 /**
+ * Check non-empty string values before normalization.
+ * @param {any} value - Candidate value.
+ * @returns {boolean} True when value is a non-empty string.
+ */
+function isNonEmptyString(value) {
+    return typeof value === 'string' && value.trim().length > 0;
+}
+
+/**
+ * Keep config normalization on plain objects and reject arrays/null.
+ * @param {any} value - Candidate object.
+ * @returns {object} Plain object or empty object.
+ */
+function normalizeObject(value) {
+    return Object.prototype.toString.call(value) === '[object Object]' ? value : {};
+}
+
+/**
  * Resolve relative relationship once to avoid recomputing absolute paths in inclusion checks.
  * @param {string} basePath - Base directory.
  * @param {string} targetPath - Candidate path.
@@ -73,6 +91,8 @@ function isPathInsideOrSame(basePath, targetPath) {
 }
 
 module.exports = {
+    isNonEmptyString,
+    normalizeObject,
     normalizePort,
     toForwardSlashes,
     inferReloadType,

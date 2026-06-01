@@ -76,8 +76,8 @@ function formatPath(value, options = {}) {
 function formatLogLine(options = {}) {
     const level = LEVEL_STYLE[options.level] ? options.level : 'info';
     const levelStyle = LEVEL_STYLE[level];
-    const prefix = String(options.prefix || '[log]');
-    const message = String(options.message || '');
+    const prefix = String(options.prefix ?? '[log]');
+    const message = String(options.message ?? '');
     const useColor = typeof options.useColor === 'boolean' ? options.useColor : supportsColor();
 
     // Keep prefix low-contrast so the actionable part is the level + message.

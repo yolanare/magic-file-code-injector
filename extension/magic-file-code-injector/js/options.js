@@ -9,16 +9,6 @@ const { sendRuntimeMessage, setStatusMessage } = self.MfciRuntimeUtils;
 let model = null;
 
 /**
- * Render status text with error styling support.
- * @param {any} message - Runtime message payload received from UI/content/background.
- * @param {any} isError - True when status should be rendered with error styling.
- * @returns {void} Updates status area content and error style.
- */
-function setStatus(message, isError) {
-  setStatusMessage(statusMessageElement, message, isError);
-}
-
-/**
  * Render the enabled-file list shown in options for one host.
  * @param {any} enabledFileIds - Enabled file IDs for the current host.
  * @returns {HTMLElement} Rendered block listing enabled files.
@@ -32,7 +22,7 @@ function createEnabledFilesBlock(enabledFileIds) {
   title.textContent = "Enabled files";
   block.appendChild(title);
 
-  if (!enabledFileIds || enabledFileIds.length === 0) {
+  if (enabledFileIds.length === 0) {
     const empty = document.createElement("div");
     empty.className = "enabled-files-empty";
     empty.textContent = "No file enabled.";
@@ -97,7 +87,7 @@ function createSiteRow(hostKey, hostState) {
     });
 
     if (!response || response.ok !== true) {
-      setStatus((response && response.error) || "Failed to delete site settings.", true);
+      setStatusMessage(statusMessageElement, (response && response.error) || "Failed to delete site settings.", true);
       return;
     }
 
@@ -108,7 +98,7 @@ function createSiteRow(hostKey, hostState) {
   top.appendChild(removeButton);
 
   row.appendChild(top);
-  row.appendChild(createEnabledFilesBlock(hostState.enabledFileIds || []));
+  row.appendChild(createEnabledFilesBlock(hostState.enabledFileIds));
 
   return row;
 }
@@ -121,7 +111,7 @@ function createSiteRow(hostKey, hostState) {
 function renderSites(hosts) {
   siteListElement.innerHTML = "";
 
-  const entries = Object.entries(hosts || {}).sort(([left], [right]) => left.localeCompare(right));
+  const entries = Object.entries(hosts).sort(([left], [right]) => left.localeCompare(right));
   if (entries.length === 0) {
     const empty = document.createElement("div");
     empty.className = "status";
@@ -140,22 +130,18 @@ function renderSites(hosts) {
  * @returns {void} Renders current model into UI.
  */
 function render() {
-  if (!model) {
-    return;
-  }
-
   serverOriginElement.textContent = model.server.origin;
   portInputElement.value = model.global.port;
 
   if (model.server.websocketError) {
-    setStatus(model.server.websocketError, true);
+    setStatusMessage(statusMessageElement, model.server.websocketError, true);
   } else if (model.server.websocketConnected) {
-    setStatus("Connected to local server WebSocket.", false);
+    setStatusMessage(statusMessageElement, "Connected to local server WebSocket.", false);
   } else {
-    setStatus("Waiting for local server WebSocket connection.", false);
+    setStatusMessage(statusMessageElement, "Waiting for local server WebSocket connection.", false);
   }
 
-  renderSites(model.hosts || {});
+  renderSites(model.hosts);
 }
 
 /**
@@ -168,7 +154,7 @@ async function refreshModel() {
     model = response;
     render();
   } catch (error) {
-    setStatus(String(error.message || error), true);
+    setStatusMessage(statusMessageElement, String(error.message || error), true);
   }
 }
 
@@ -182,7 +168,7 @@ portFormElement.addEventListener("submit", async (event) => {
   });
 
   if (!response || response.ok !== true) {
-    setStatus((response && response.error) || "Unable to update port.", true);
+    setStatusMessage(statusMessageElement, (response && response.error) || "Unable to update port.", true);
     return;
   }
 

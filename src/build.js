@@ -5,18 +5,9 @@ const sass = require('sass');
 const esbuild = require('esbuild');
 const { formatLogLine, formatPath, supportsColor } = require('./log-format');
 const DEFAULT_TEMPLATE = require('./mfci.config.cjs');
-const { toForwardSlashes, isPathInsideOrSame } = require('./server-utils');
+const { isNonEmptyString, normalizeObject, toForwardSlashes, isPathInsideOrSame } = require('./server-utils');
 
 const DEFAULT_BUILD_LOG_PREFIX = '[mfci-build]';
-
-/**
- * Check for non-empty strings before path/flag normalization.
- * @param {any} value - Candidate input value.
- * @returns {boolean} True when value is a non-empty string.
- */
-function isNonEmptyString(value) {
-    return typeof value === 'string' && value.trim().length > 0;
-}
 
 /**
  * Normalize optional booleans while preserving explicit false values.
@@ -39,7 +30,7 @@ function normalizeExtensions(value, fallback) {
     return new Set(
         source
             .map((entry) =>
-                String(entry || '')
+                String(entry ?? '')
                     .trim()
                     .toLowerCase()
             )
@@ -59,18 +50,15 @@ function normalizeCopyTasks(value, cwd) {
         return [];
     }
 
-    return value
-        .map((task) => (task && typeof task === 'object' ? task : null))
-        .filter(Boolean)
-        .map((task) => {
-            const from = isNonEmptyString(task.from) ? path.resolve(cwd, task.from.trim()) : '';
-            const to = isNonEmptyString(task.to) ? path.resolve(cwd, task.to.trim()) : '';
-            if (!from || !to) {
-                return null;
-            }
-            return { from, to };
-        })
-        .filter(Boolean);
+    return value.flatMap((task) => {
+        if (!task || typeof task !== 'object' || Array.isArray(task)) {
+            return [];
+        }
+
+        const from = isNonEmptyString(task.from) ? path.resolve(cwd, task.from.trim()) : '';
+        const to = isNonEmptyString(task.to) ? path.resolve(cwd, task.to.trim()) : '';
+        return from && to ? [{ from, to }] : [];
+    });
 }
 
 /**
@@ -85,9 +73,9 @@ function normalizeBuildConfig(inputConfig = {}, options = {}) {
     const logger = typeof options.logger === 'function' ? options.logger : console.log;
     const changedSourcePath = isNonEmptyString(options.changedSourcePath) ? path.resolve(options.changedSourcePath.trim()) : '';
 
-    const source = inputConfig && typeof inputConfig === 'object' ? inputConfig : {};
-    const buildSource = source.build && typeof source.build === 'object' ? source.build : {};
-    const languageSource = buildSource.languages && typeof buildSource.languages === 'object' ? buildSource.languages : {};
+    const source = normalizeObject(inputConfig);
+    const buildSource = normalizeObject(source.build);
+    const languageSource = normalizeObject(buildSource.languages);
 
     const defaults = DEFAULT_TEMPLATE;
     const buildDefaults = defaults.build;
@@ -98,12 +86,12 @@ function normalizeBuildConfig(inputConfig = {}, options = {}) {
     const devRoot = path.resolve(rootDir, 'dev');
     const buildRoot = path.resolve(rootDir, 'build');
 
-    const htmlInput = languageSource.html && typeof languageSource.html === 'object' ? languageSource.html : {};
-    const sassInput = languageSource.sass && typeof languageSource.sass === 'object' ? languageSource.sass : {};
-    const jsInput = languageSource.js && typeof languageSource.js === 'object' ? languageSource.js : {};
+    const htmlInput = normalizeObject(languageSource.html);
+    const sassInput = normalizeObject(languageSource.sass);
+    const jsInput = normalizeObject(languageSource.js);
 
-    const sassSettingsInput = sassInput.settings && typeof sassInput.settings === 'object' ? sassInput.settings : {};
-    const jsSettingsInput = jsInput.settings && typeof jsInput.settings === 'object' ? jsInput.settings : {};
+    const sassSettingsInput = normalizeObject(sassInput.settings);
+    const jsSettingsInput = normalizeObject(jsInput.settings);
 
     return {
         cwd,
@@ -147,7 +135,7 @@ function normalizeBuildConfig(inputConfig = {}, options = {}) {
                     loadPaths:
                         Array.isArray(sassSettingsInput.loadPaths) ?
                             sassSettingsInput.loadPaths
-                                .map((entry) => String(entry || '').trim())
+                                .map((entry) => String(entry ?? '').trim())
                                 .filter(Boolean)
                                 .map((entry) => path.resolve(cwd, entry))
                         :   languageDefaults.sass.settings.loadPaths,
@@ -253,7 +241,7 @@ function replaceExtension(filePath, extension) {
  * @returns {string} Normalized CSS content.
  */
 function stripLeadingCssCharset(cssText) {
-    return String(cssText || '').replace(/^\uFEFF?\s*@charset\s+["'][^"']+["'];\s*/i, '');
+    return String(cssText ?? '').replace(/^\uFEFF?\s*@charset\s+["'][^"']+["'];\s*/i, '');
 }
 
 /**
@@ -272,7 +260,7 @@ async function readTextFileTrimmed(filePath) {
  * @returns {Promise<boolean>} True when file content changed.
  */
 async function writeTextFileIfChanged(outputFile, content) {
-    const nextText = String(content || '');
+    const nextText = String(content ?? '');
     const previousText = await fsPromises.readFile(outputFile, 'utf8').catch(() => null);
     if (previousText === nextText) {
         return false;
@@ -305,7 +293,7 @@ async function removeFileIfExists(filePath) {
  * @returns {string} Output-relative JS path.
  */
 function renderJsOutputPath(relativePath, sourceExtension) {
-    const extension = String(sourceExtension || '').toLowerCase();
+    const extension = String(sourceExtension ?? '').toLowerCase();
     if (extension === '.ts' || extension === '.tsx' || extension === '.jsx' || extension === '.cjs') {
         return replaceExtension(relativePath, '.js');
     }
@@ -1110,7 +1098,7 @@ async function collectFirstHtmlByBasename(rootDir) {
  * @returns {string} Escaped JavaScript text safe for inline script tags.
  */
 function escapeInlineScriptContent(sourceText) {
-    return String(sourceText || '').replace(/<\/script/gi, '<\\/script');
+    return String(sourceText ?? '').replace(/<\/script/gi, '<\\/script');
 }
 
 /**
@@ -1348,7 +1336,7 @@ async function runMergeSameName(config, changedOutputs) {
     for (const { name, orderedParts } of mergeCandidates) {
 
         const mergedText = `${(await Promise.all(orderedParts.map((part) => resolveMergedPartContent(part.filePath))))
-            .map((entry) => String(entry || '').trim())
+            .map((entry) => String(entry ?? '').trim())
             .filter(Boolean)
             .join('\n\n')}\n`;
 

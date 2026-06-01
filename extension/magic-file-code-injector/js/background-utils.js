@@ -37,9 +37,9 @@
     const source = input && typeof input === "object" ? input : {};
 
     return {
-      enabledFileIds: uniqueStrings(Array.isArray(source.enabledFileIds) ? source.enabledFileIds : []),
+      enabledFileIds: uniqueStrings(source.enabledFileIds),
       autoRefreshJs: source.autoRefreshJs === true,
-      pendingJsUpdateIds: uniqueStrings(Array.isArray(source.pendingJsUpdateIds) ? source.pendingJsUpdateIds : []),
+      pendingJsUpdateIds: uniqueStrings(source.pendingJsUpdateIds),
       lastError: typeof source.lastError === "string" ? source.lastError : "",
     };
   }
@@ -228,7 +228,7 @@
    * @returns {string} Human-readable list.
    */
   function formatFileIdList(fileIds) {
-    const uniqueIds = uniqueStrings(Array.isArray(fileIds) ? fileIds : []);
+    const uniqueIds = uniqueStrings(fileIds);
     if (uniqueIds.length === 0) {
       return "unknown file";
     }
@@ -277,9 +277,7 @@
 
   self.MfciBackgroundUtils = {
     STORAGE_KEY,
-    DEFAULT_STATE,
     DEFAULT_HOST_STATE,
-    MANIFEST_ROUTE,
     uniqueStrings,
     normalizeHostState,
     normalizeState,
@@ -291,7 +289,6 @@
     getHostKey,
     normalizeManifestFile,
     resolveFileUrl,
-    formatFileIdList,
     formatRefreshLogMessage,
     sortedHostEntries,
     toOptionsHostState,

@@ -25,9 +25,6 @@
    * @returns {void} Mutates status element in-place.
    */
   function setStatusMessage(element, message, isError) {
-    if (!element) {
-      return;
-    }
     element.textContent = message;
     element.classList.toggle("status-error", isError === true);
   }

@@ -1,6 +1,6 @@
 {
     "name": "@mfci/dev-server",
-    "version": "0.3.0",
+    "version": "0.4.0",
     "description": "LiveReload server for magic-file-code-injector workflows.",
     "type": "commonjs",
     "main": "src/server.js",
@@ -19,7 +19,7 @@
         "node": ">=18"
     },
     "scripts": {
-        "check": "node --check src/server.js && node --check src/server-utils.js && node --check src/cli.js && node --check src/config-loader.js && node --check src/build.js && node --check src/build-cli.js && node --check src/log-format.js && node --check src/mfci.config.cjs && node --check bin/mfci-dev-server.js && node --check bin/mfci-build.js && node --check extension/magic-file-code-injector/js/background-utils.js && node --check extension/magic-file-code-injector/js/runtime-utils.js"
+        "check": "node --check src/server.js && node --check src/server-utils.js && node --check src/cli.js && node --check src/config-loader.js && node --check src/build.js && node --check src/build-cli.js && node --check src/log-format.js && node --check src/mfci.config.cjs && node --check bin/mfci-dev-server.js && node --check bin/mfci-build.js && node --check extension/magic-file-code-injector/js/background-utils.js && node --check extension/magic-file-code-injector/js/runtime-utils.js && node --check extension/magic-file-code-injector/js/background.js && node --check extension/magic-file-code-injector/js/content.js && node --check extension/magic-file-code-injector/js/offscreen.js && node --check extension/magic-file-code-injector/js/options.js && node --check extension/magic-file-code-injector/js/popup.js"
     },
     "author": "Yolanare",
     "license": "MIT",

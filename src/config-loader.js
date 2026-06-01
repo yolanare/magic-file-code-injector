@@ -10,7 +10,7 @@ const DEFAULT_TEMPLATE = require('./mfci.config.cjs');
  * @returns {boolean} True when the value is a plain object.
  */
 function isPlainObject(value) {
-    return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+    return Object.prototype.toString.call(value) === '[object Object]';
 }
 
 /**
@@ -100,11 +100,11 @@ function loadRuntimeConfig(options = {}) {
  * @returns {object} Build section only.
  */
 function resolveBuildConfig(runtimeConfig) {
-    const config = runtimeConfig && typeof runtimeConfig === 'object' ? runtimeConfig : {};
+    const config = isPlainObject(runtimeConfig) ? runtimeConfig : {};
 
     return {
         rootDir: config.rootDir,
-        build: cloneConfigValue(config.build || {}),
+        build: cloneConfigValue(isPlainObject(config.build) ? config.build : {}),
     };
 }
 

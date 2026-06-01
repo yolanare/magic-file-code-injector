@@ -152,10 +152,6 @@ function tabSendMessage(tabId, payload) {
  * @returns {Promise<void>} Resolves after best-effort message delivery.
  */
 async function logToBrowserTabConsole(tabId, level, message) {
-  if (typeof tabId !== "number") {
-    return;
-  }
-
   await tabSendMessage(tabId, {
     type: "MFCI_BROWSER_LOG",
     level,

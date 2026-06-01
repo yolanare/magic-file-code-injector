@@ -167,24 +167,10 @@ function createMissingFileRow(fileId, enabledFileIds) {
 }
 
 /**
- * Render status text with error styling support.
- * @param {any} message - Runtime message payload received from UI/content/background.
- * @param {any} isError - True when status should be rendered with error styling.
- * @returns {void} Updates status area content and error style.
- */
-function setStatus(message, isError) {
-  setStatusMessage(statusMessageElement, message, isError);
-}
-
-/**
  * Render popup/options UI from current model state.
  * @returns {void} Renders current model into UI.
  */
 function render() {
-  if (!model) {
-    return;
-  }
-
   hostValueElement.textContent = model.hostKey || "No active web page";
   serverValueElement.textContent = model.server.origin;
   globalInjectionEnabledElement.checked = model.global.injectionEnabled !== false;
@@ -198,21 +184,16 @@ function render() {
   }
 
   if (serverProblems.length > 0) {
-    setStatus(serverProblems.join(" "), true);
+    setStatusMessage(statusMessageElement, serverProblems.join(" "), true);
   } else if (model.global.injectionEnabled === false) {
-    setStatus("Injection disabled globally.", false);
+    setStatusMessage(statusMessageElement, "Injection disabled globally.", false);
   } else if (model.server.websocketConnected) {
-    setStatus("Connected to local server.", false);
+    setStatusMessage(statusMessageElement, "Connected to local server.", false);
   } else {
-    setStatus("Waiting for local server WebSocket connection.", false);
+    setStatusMessage(statusMessageElement, "Waiting for local server WebSocket connection.", false);
   }
 
-  const hostState = model.hostState || {
-    enabledFileIds: [],
-    autoRefreshJs: false,
-    pendingJsUpdateIds: [],
-    lastError: "",
-  };
+  const hostState = model.hostState;
 
   autoRefreshJsElement.checked = hostState.autoRefreshJs;
   autoRefreshJsElement.disabled = !model.hostKey;
@@ -226,11 +207,11 @@ function render() {
   }
 
   if (hostState.lastError) {
-    setStatus(hostState.lastError, true);
+    setStatusMessage(statusMessageElement, hostState.lastError, true);
   }
 
   const files = model.manifest && Array.isArray(model.manifest.files) ? model.manifest.files : [];
-  const enabledFileIds = new Set(hostState.enabledFileIds || []);
+  const enabledFileIds = new Set(hostState.enabledFileIds);
   const manifestIdSet = new Set(files.map((file) => file.id));
   const missingEnabledFileIds =
     model.manifest && Array.isArray(model.manifest.files) ?
@@ -266,7 +247,7 @@ async function refreshModel() {
     model = response;
     render();
   } catch (error) {
-    setStatus(String(error.message || error), true);
+    setStatusMessage(statusMessageElement, String(error.message || error), true);
   }
 }
 

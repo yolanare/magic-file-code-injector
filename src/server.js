@@ -6,7 +6,15 @@ const livereload = require('livereload');
 const { normalizeBuildConfig, runBuild } = require('./build');
 const { formatLogLine, formatPath, supportsColor } = require('./log-format');
 const DEFAULT_TEMPLATE = require('./mfci.config.cjs');
-const { normalizePort, toForwardSlashes, inferReloadType, isPathInside, isPathInsideOrSame } = require('./server-utils');
+const {
+    isNonEmptyString,
+    normalizeObject,
+    normalizePort,
+    toForwardSlashes,
+    inferReloadType,
+    isPathInside,
+    isPathInsideOrSame,
+} = require('./server-utils');
 
 const INTERNAL_MANIFEST_ROUTE = '/magic-file-code-injector.manifest.json';
 const INTERNAL_PROJECT_NAME = 'magic-file-code-injector';
@@ -23,15 +31,6 @@ const MIME_TYPES = {
 };
 
 /**
- * Check non-empty string values before normalization.
- * @param {any} value - Candidate value.
- * @returns {boolean} True when value is a non-empty string.
- */
-function isNonEmptyString(value) {
-    return typeof value === 'string' && value.trim().length > 0;
-}
-
-/**
  * Normalize dev-server config for deterministic runtime behavior.
  * @param {any} inputConfig - Runtime config object.
  * @param {any} options - Runtime options.
@@ -41,7 +40,7 @@ function normalizeConfig(inputConfig = {}, options = {}) {
     const cwd = options.cwd || process.cwd();
     const useColor = typeof options.useColor === 'boolean' ? options.useColor : supportsColor();
 
-    const source = inputConfig && typeof inputConfig === 'object' ? inputConfig : {};
+    const source = normalizeObject(inputConfig);
     const host = isNonEmptyString(source.host) ? source.host.trim() : DEFAULT_TEMPLATE.host;
     const port = normalizePort(source.port, DEFAULT_TEMPLATE.port);
     const rootDir = path.resolve(cwd, isNonEmptyString(source.rootDir) ? source.rootDir.trim() : DEFAULT_TEMPLATE.rootDir);
@@ -108,7 +107,7 @@ function collectWatchedExtensions(buildConfig) {
  * @returns {string} Relative formatted path.
  */
 function formatServerPath(config, inputPath) {
-    const absolutePath = path.resolve(String(inputPath || ''));
+    const absolutePath = path.resolve(String(inputPath ?? ''));
     const relativePath = toForwardSlashes(path.relative(config.cwd, absolutePath) || '.');
     return formatPath(relativePath, { useColor: config.useColor });
 }
@@ -124,7 +123,7 @@ function logServer(config, level, message) {
     const line = formatLogLine({
         prefix: config.logPrefix,
         level,
-        message: String(message || ''),
+        message: String(message ?? ''),
         useColor: config.useColor,
     });
 
@@ -257,7 +256,7 @@ function toUrlPath(fsPath, config) {
  * @returns {string|null} Resolved absolute build file path, or null when invalid.
  */
 function resolveRequestedAbsolutePath(config, servedType, relativePath) {
-    const relative = String(relativePath || '').replace(/^\/+/, '');
+    const relative = String(relativePath ?? '').replace(/^\/+/, '');
     if (!relative) {
         return null;
     }

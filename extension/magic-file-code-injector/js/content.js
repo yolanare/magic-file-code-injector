@@ -54,15 +54,6 @@
   }
 
   /**
-   * Remove an injected script element from the page.
-   * @param {any} scriptElement - Injected script DOM element to remove.
-   * @returns {void} Removes the provided script node from DOM.
-   */
-  function removeScriptElement(scriptElement) {
-    scriptElement.remove();
-  }
-
-  /**
    * Append a cache-busting hash query parameter to force browser fetch refresh.
    * @param {any} urlValue - URL-like value to parse or normalize.
    * @param {any} contentHash - Hash used for cache-busting and change detection.
@@ -292,18 +283,6 @@
   }
 
   /**
-   * Remove an injected CSS file by id.
-   * @param {any} fileId - Stable manifest file identifier (type:path).
-   * @returns {void} Removes one injected CSS node by id.
-   */
-  function removeCssFile(fileId) {
-    const styleElement = findById(STYLE_ATTR, fileId);
-    if (styleElement) {
-      styleElement.remove();
-    }
-  }
-
-  /**
    * Remove an injected JS file by id and clear its execution hash.
    * @param {any} fileId - Stable manifest file identifier (type:path).
    * @returns {void} Removes injected JS nodes and execution cache for one id.
@@ -316,7 +295,7 @@
         continue;
       }
 
-      removeScriptElement(scriptElement);
+      scriptElement.remove();
     }
 
     executedScriptHashes.delete(fileId);
@@ -340,7 +319,7 @@
       const fileId = scriptElement.getAttribute(SCRIPT_ATTR);
       if (!desiredJsIds.has(fileId)) {
         pendingJsFiles.delete(fileId);
-        removeScriptElement(scriptElement);
+        scriptElement.remove();
         executedScriptHashes.delete(fileId);
       }
     }
