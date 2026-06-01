@@ -40,6 +40,7 @@ let socketBatchTimer = null;
 let socketBatchInFlight = false;
 let socketBatchStartedAt = 0;
 let socketBatchGeneration = 0;
+let socketBatchFlushWaiters = [];
 
 /**
  * Promisify chrome.storage.get for easier async flow handling.
@@ -997,22 +998,13 @@ function getAffectedIdsForHostEvent(hostState, event, manifestTypeById) {
   return matchedByPath;
 }
 
-/**
- * Queue a delayed flush to group multiple socket events saved within a short window.
- * @returns {void} Schedules one batch processing pass.
- */
-function scheduleSocketEventFlush() {
-  if (socketBatchInFlight) {
-    const batchAgeMs = socketBatchStartedAt ? Date.now() - socketBatchStartedAt : 0;
-    if (socketBatchStartedAt && batchAgeMs < SOCKET_EVENT_BATCH_MAX_RUNTIME_MS) {
-      return;
-    }
-
-    socketBatchGeneration += 1;
-    socketBatchInFlight = false;
-    socketBatchStartedAt = 0;
+function resolveSocketBatchWaiters(waiters, result) {
+  for (const resolve of waiters) {
+    resolve(result);
   }
+}
 
+function queueSocketBatchFlush() {
   if (socketBatchTimer) {
     clearTimeout(socketBatchTimer);
   }
@@ -1024,11 +1016,41 @@ function scheduleSocketEventFlush() {
 }
 
 /**
+ * Queue a delayed flush and return a promise resolved after that batch is processed.
+ * @returns {Promise<object>} Batch processing result sent back to the offscreen sender.
+ */
+function scheduleSocketEventFlush() {
+  const flushPromise = new Promise((resolve) => {
+    socketBatchFlushWaiters.push(resolve);
+  });
+
+  if (socketBatchInFlight) {
+    const batchAgeMs = socketBatchStartedAt ? Date.now() - socketBatchStartedAt : 0;
+    if (socketBatchStartedAt && batchAgeMs < SOCKET_EVENT_BATCH_MAX_RUNTIME_MS) {
+      return flushPromise;
+    }
+
+    socketBatchGeneration += 1;
+    socketBatchInFlight = false;
+    socketBatchStartedAt = 0;
+  }
+
+  queueSocketBatchFlush();
+
+  return flushPromise;
+}
+
+/**
  * Process queued socket events as one batch and apply one aggregated refresh per tab/file type.
  * @returns {Promise<void>} Completes after tab sync/reload actions are dispatched.
  */
 async function flushSocketEventBatch() {
   if (socketBatchInFlight || pendingSocketEvents.length === 0) {
+    if (!socketBatchInFlight && pendingSocketEvents.length === 0 && socketBatchFlushWaiters.length > 0) {
+      const waiters = socketBatchFlushWaiters;
+      socketBatchFlushWaiters = [];
+      resolveSocketBatchWaiters(waiters, { ok: true, flushed: false });
+    }
     return;
   }
 
@@ -1036,9 +1058,12 @@ async function flushSocketEventBatch() {
   socketBatchStartedAt = Date.now();
   socketBatchGeneration += 1;
   const batchGeneration = socketBatchGeneration;
+  const batchWaiters = socketBatchFlushWaiters;
+  socketBatchFlushWaiters = [];
 
   const events = pendingSocketEvents;
   pendingSocketEvents = [];
+  let batchResult = { ok: true, flushed: true };
 
   try {
     const state = await loadState();
@@ -1140,7 +1165,11 @@ async function flushSocketEventBatch() {
     if (stateChanged) {
       await saveState(state);
     }
+  } catch (error) {
+    batchResult = { ok: false, error: String(error.message || error) };
   } finally {
+    resolveSocketBatchWaiters(batchWaiters, batchResult);
+
     if (batchGeneration !== socketBatchGeneration) {
       return;
     }
@@ -1148,7 +1177,7 @@ async function flushSocketEventBatch() {
     socketBatchInFlight = false;
     socketBatchStartedAt = 0;
     if (pendingSocketEvents.length > 0) {
-      scheduleSocketEventFlush();
+      queueSocketBatchFlush();
     }
   }
 }
@@ -1156,23 +1185,23 @@ async function flushSocketEventBatch() {
 /**
  * Parse and queue one raw LiveReload message; real refresh actions run in batched flushes.
  * @param {any} rawMessage - Raw WebSocket message payload from LiveReload server.
- * @returns {void} Adds supported events to batch queue.
+ * @returns {Promise<object>} Processing result for the queued refresh event.
  */
 function handleSocketMessage(rawMessage) {
   let payload;
   try {
     payload = JSON.parse(rawMessage);
   } catch (_error) {
-    return;
+    return Promise.resolve({ ok: true, queued: false });
   }
 
   const event = parseSocketRefreshEvent(payload);
   if (!event) {
-    return;
+    return Promise.resolve({ ok: true, queued: false });
   }
 
   pendingSocketEvents.push(event);
-  scheduleSocketEventFlush();
+  return scheduleSocketEventFlush();
 }
 
 /**
@@ -1353,8 +1382,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         updateSocketStatus(message);
         return { ok: true };
       case "MFCI_OFFSCREEN_SOCKET_MESSAGE":
-        handleSocketMessage(message.data);
-        return { ok: true };
+        return handleSocketMessage(message.data);
       case "MFCI_OFFSCREEN_LOG":
         logToBrowserConsole(message.level, message.message);
         return { ok: true };

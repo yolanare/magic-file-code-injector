@@ -4,20 +4,29 @@
     "http://livereload.com/protocols/official-8",
     "http://livereload.com/protocols/official-9",
   ];
-  const RECONNECT_INTERVAL_MS = 2000;
-  const RECONNECT_WINDOW_MS = 20000;
+  const RECONNECT_FAST_INTERVAL_MS = 2000;
+  const RECONNECT_SLOW_INTERVAL_MS = 10000;
+  const RECONNECT_FAST_WINDOW_MS = 20000;
+  const SOCKET_KEEPALIVE_INTERVAL_MS = 15000;
+  const SOCKET_RECYCLE_AGE_MS = 10 * 60 * 1000;
+  const BACKGROUND_DELIVERY_RETRY_MS = 500;
+  const MAX_PENDING_BACKGROUND_MESSAGES = 100;
 
   let socket = null;
   let socketUrl = "";
   let socketConnected = false;
   let socketError = "";
+  let socketOpenedAt = 0;
+  let socketKeepaliveTimer = null;
   let reconnectTimer = null;
-  let reconnectUntil = 0;
-  let reconnectSuspended = false;
+  let reconnectStartedAt = 0;
   let hasConnectedAtLeastOnce = false;
   let connectionLossLogged = false;
   let lastReason = "startup";
   let statusWaiters = [];
+  let pendingBackgroundMessages = [];
+  let backgroundDeliveryInFlight = false;
+  let backgroundDeliveryRetryTimer = null;
 
   function getStatusSnapshot() {
     return {
@@ -39,17 +48,30 @@
   }
 
   function sendToBackground(message) {
-    try {
-      chrome.runtime.sendMessage(message, () => {
-        void chrome.runtime.lastError;
-      });
-    } catch (_error) {
-      // No-op
-    }
+    return new Promise((resolve) => {
+      try {
+        chrome.runtime.sendMessage(message, (response) => {
+          const runtimeError = chrome.runtime.lastError;
+          if (runtimeError) {
+            resolve({ ok: false, error: runtimeError.message });
+            return;
+          }
+
+          if (response && response.ok === false) {
+            resolve({ ok: false, error: response.error || "Background rejected the message." });
+            return;
+          }
+
+          resolve({ ok: true, response });
+        });
+      } catch (error) {
+        resolve({ ok: false, error: String(error.message || error) });
+      }
+    });
   }
 
   function postStatus(reason) {
-    sendToBackground({
+    void sendToBackground({
       type: "MFCI_OFFSCREEN_SOCKET_STATUS",
       target: "background",
       connected: socketConnected,
@@ -81,7 +103,7 @@
   }
 
   function logToBrowserConsole(level, message) {
-    sendToBackground({
+    void sendToBackground({
       type: "MFCI_OFFSCREEN_LOG",
       target: "background",
       level,
@@ -89,57 +111,192 @@
     });
   }
 
+  function stopSocketKeepalive() {
+    if (socketKeepaliveTimer) {
+      clearInterval(socketKeepaliveTimer);
+      socketKeepaliveTimer = null;
+    }
+  }
+
   function stopReconnectLoop() {
     if (reconnectTimer) {
-      clearInterval(reconnectTimer);
+      clearTimeout(reconnectTimer);
       reconnectTimer = null;
     }
-    reconnectUntil = 0;
+    reconnectStartedAt = 0;
   }
 
   function logConnectionLoss(reason) {
-    if (connectionLossLogged) {
+    if (connectionLossLogged || !hasConnectedAtLeastOnce) {
       return;
     }
 
     connectionLossLogged = true;
-    logToBrowserConsole("warn", `[mfci] WebSocket connection lost (${reason}). Retrying every ${RECONNECT_INTERVAL_MS / 1000}s.`);
+    logToBrowserConsole("warn", `[mfci] WebSocket connection lost (${reason}). Reconnecting automatically.`);
   }
 
   function scheduleReconnect() {
-    if (socketConnected || reconnectSuspended || !socketUrl) {
+    if (socketConnected || !socketUrl) {
       stopReconnectLoop();
       return;
     }
 
-    const now = Date.now();
-    if (reconnectUntil <= now) {
-      reconnectUntil = now + RECONNECT_WINDOW_MS;
+    if (!reconnectStartedAt) {
+      reconnectStartedAt = Date.now();
     }
 
     if (reconnectTimer) {
       return;
     }
 
-    reconnectTimer = setInterval(() => {
-      if (socketConnected) {
-        stopReconnectLoop();
-        return;
+    const elapsedMs = Date.now() - reconnectStartedAt;
+    const delayMs = elapsedMs < RECONNECT_FAST_WINDOW_MS ? RECONNECT_FAST_INTERVAL_MS : RECONNECT_SLOW_INTERVAL_MS;
+
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      if (!socketConnected) {
+        connectSocket({ url: socketUrl, reason: "reconnect" });
       }
+    }, delayMs);
+  }
 
-      if (Date.now() >= reconnectUntil) {
-        socketError = "WebSocket reconnect timeout (20s). Use Refresh to retry.";
-        reconnectSuspended = true;
-        logToBrowserConsole("warn", "[mfci] Reconnect attempts stopped after 20s.");
-        postStatus("reconnect-timeout");
-        stopReconnectLoop();
-        return;
+  function sendSocketPayload(currentSocket, payload, failureReason) {
+    if (socket !== currentSocket || currentSocket.readyState !== WebSocket.OPEN) {
+      return false;
+    }
+
+    try {
+      currentSocket.send(JSON.stringify(payload));
+      return true;
+    } catch (_error) {
+      failSocket(currentSocket, failureReason);
+      return false;
+    }
+  }
+
+  function sendSocketHello(currentSocket) {
+    sendSocketPayload(
+      currentSocket,
+      {
+        command: "hello",
+        protocols: LR_PROTOCOLS,
+        ver: "3.0.0",
+      },
+      "hello"
+    );
+  }
+
+  function sendSocketInfo(currentSocket) {
+    sendSocketPayload(
+      currentSocket,
+      {
+        command: "info",
+        url: chrome.runtime.getURL("offscreen.html"),
+      },
+      "keepalive"
+    );
+  }
+
+  function failSocket(currentSocket, reason) {
+    if (socket !== currentSocket) {
+      return;
+    }
+
+    stopSocketKeepalive();
+    socketConnected = false;
+    socketError = `WebSocket ${reason} failed. Reconnecting...`;
+    postStatus(reason);
+
+    try {
+      currentSocket.close();
+    } catch (_error) {
+      // Closing is best effort; reconnect scheduling below is the important part.
+    }
+
+    scheduleReconnect();
+  }
+
+  function runSocketHealthCheck(currentSocket) {
+    if (socket !== currentSocket) {
+      return;
+    }
+
+    if (currentSocket.readyState !== WebSocket.OPEN) {
+      failSocket(currentSocket, "keepalive");
+      return;
+    }
+
+    if (socketOpenedAt && Date.now() - socketOpenedAt >= SOCKET_RECYCLE_AGE_MS) {
+      connectSocket({ url: socketUrl, reason: "health-check", forceReconnect: true });
+      return;
+    }
+
+    sendSocketInfo(currentSocket);
+  }
+
+  function startSocketKeepalive(currentSocket) {
+    stopSocketKeepalive();
+    socketKeepaliveTimer = setInterval(() => {
+      runSocketHealthCheck(currentSocket);
+    }, SOCKET_KEEPALIVE_INTERVAL_MS);
+  }
+
+  function scheduleBackgroundDeliveryRetry() {
+    if (backgroundDeliveryRetryTimer || pendingBackgroundMessages.length === 0) {
+      return;
+    }
+
+    backgroundDeliveryRetryTimer = setTimeout(() => {
+      backgroundDeliveryRetryTimer = null;
+      void flushBackgroundMessages();
+    }, BACKGROUND_DELIVERY_RETRY_MS);
+  }
+
+  async function flushBackgroundMessages() {
+    if (backgroundDeliveryInFlight) {
+      return;
+    }
+
+    backgroundDeliveryInFlight = true;
+    try {
+      while (pendingBackgroundMessages.length > 0) {
+        const currentMessage = pendingBackgroundMessages[0];
+        const result = await sendToBackground(currentMessage);
+        if (!result.ok) {
+          scheduleBackgroundDeliveryRetry();
+          return;
+        }
+
+        if (pendingBackgroundMessages[0] === currentMessage) {
+          pendingBackgroundMessages.shift();
+          continue;
+        }
+
+        const deliveredMessageIndex = pendingBackgroundMessages.indexOf(currentMessage);
+        if (deliveredMessageIndex >= 0) {
+          pendingBackgroundMessages.splice(deliveredMessageIndex, 1);
+        }
       }
+    } finally {
+      backgroundDeliveryInFlight = false;
+      if (pendingBackgroundMessages.length > 0) {
+        scheduleBackgroundDeliveryRetry();
+      }
+    }
+  }
 
-      connectSocket({ url: socketUrl, reason: "reconnect" });
-    }, RECONNECT_INTERVAL_MS);
+  function queueBackgroundSocketMessage(data) {
+    pendingBackgroundMessages.push({
+      type: "MFCI_OFFSCREEN_SOCKET_MESSAGE",
+      target: "background",
+      data,
+    });
 
-    connectSocket({ url: socketUrl, reason: "reconnect" });
+    if (pendingBackgroundMessages.length > MAX_PENDING_BACKGROUND_MESSAGES) {
+      pendingBackgroundMessages = pendingBackgroundMessages.slice(-MAX_PENDING_BACKGROUND_MESSAGES);
+    }
+
+    void flushBackgroundMessages();
   }
 
   function connectSocket(options = {}) {
@@ -157,13 +314,7 @@
 
     lastReason = reason;
 
-    if (reconnectSuspended && !isManual && !forceReconnect) {
-      postStatus(reason);
-      return;
-    }
-
     if (isManual) {
-      reconnectSuspended = false;
       socketError = "";
       connectionLossLogged = false;
       stopReconnectLoop();
@@ -175,17 +326,29 @@
       socketUrl === nextSocketUrl &&
       (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)
     ) {
+      if (socket.readyState === WebSocket.OPEN && !socketKeepaliveTimer) {
+        startSocketKeepalive(socket);
+      }
       postStatus(reason);
       return;
     }
 
     if (socket) {
-      socket.close();
+      const previousSocket = socket;
       socket = null;
+      stopSocketKeepalive();
+      try {
+        previousSocket.close();
+      } catch (_error) {
+        // No-op
+      }
     }
 
     socketConnected = false;
+    socketError = "";
+    socketOpenedAt = 0;
     socketUrl = nextSocketUrl;
+
     const currentSocket = new WebSocket(nextSocketUrl);
     socket = currentSocket;
     postStatus(reason);
@@ -196,28 +359,20 @@
       }
 
       hasConnectedAtLeastOnce = true;
-      reconnectSuspended = false;
       socketConnected = true;
       socketError = "";
+      socketOpenedAt = Date.now();
       stopReconnectLoop();
       connectionLossLogged = false;
       postStatus("open");
 
-      if (reason !== "startup" && reason !== "keepalive") {
+      if (reason === "manual" || reason === "reconnect") {
         logToBrowserConsole("log", "[mfci] WebSocket connection established.");
       }
 
-      try {
-        currentSocket.send(
-          JSON.stringify({
-            command: "hello",
-            protocols: LR_PROTOCOLS,
-            ver: "3.0.0",
-          })
-        );
-      } catch (_error) {
-        // Ignore handshake failures and keep listening.
-      }
+      sendSocketHello(currentSocket);
+      sendSocketInfo(currentSocket);
+      startSocketKeepalive(currentSocket);
     });
 
     currentSocket.addEventListener("error", () => {
@@ -225,16 +380,9 @@
         return;
       }
 
+      stopSocketKeepalive();
       socketConnected = false;
-      if (!hasConnectedAtLeastOnce) {
-        socketError = "WebSocket connection failed at page load. Use Refresh to retry.";
-        reconnectSuspended = true;
-        postStatus("error");
-        stopReconnectLoop();
-        return;
-      }
-
-      socketError = "WebSocket connection failed. Reconnecting...";
+      socketError = hasConnectedAtLeastOnce ? "WebSocket connection failed. Reconnecting..." : "WebSocket connection failed. Retrying...";
       postStatus("error");
       logConnectionLoss("error");
       scheduleReconnect();
@@ -245,16 +393,10 @@
         return;
       }
 
+      stopSocketKeepalive();
       socketConnected = false;
-      if (!hasConnectedAtLeastOnce) {
-        socketError = "WebSocket connection failed at page load. Use Refresh to retry.";
-        reconnectSuspended = true;
-        postStatus("close");
-        stopReconnectLoop();
-        return;
-      }
-
-      socketError = "WebSocket disconnected. Reconnecting...";
+      socketOpenedAt = 0;
+      socketError = hasConnectedAtLeastOnce ? "WebSocket disconnected. Reconnecting..." : "WebSocket connection failed. Retrying...";
       postStatus("close");
       logConnectionLoss("close");
       scheduleReconnect();
@@ -265,11 +407,7 @@
         return;
       }
 
-      sendToBackground({
-        type: "MFCI_OFFSCREEN_SOCKET_MESSAGE",
-        target: "background",
-        data: event.data,
-      });
+      queueBackgroundSocketMessage(event.data);
     });
   }
 
