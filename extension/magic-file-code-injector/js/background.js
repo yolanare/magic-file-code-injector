@@ -19,31 +19,18 @@ const {
   toOptionsHostState,
 } = self.MfciBackgroundUtils;
 
-let socket = null;
 let socketUrl = "";
 let socketConnected = false;
 let socketError = "";
-let reconnectTimer = null;
-let reconnectUntil = 0;
-let connectionLossLogged = false;
-let hasConnectedAtLeastOnce = false;
-let reconnectSuspended = false;
-let keepaliveRecoveryLastAttemptAt = 0;
 
-const LR_PROTOCOLS = [
-  "http://livereload.com/protocols/official-7",
-  "http://livereload.com/protocols/official-8",
-  "http://livereload.com/protocols/official-9",
-];
-const RECONNECT_INTERVAL_MS = 2000;
-const RECONNECT_WINDOW_MS = 20000;
-const KEEPALIVE_RECOVERY_COOLDOWN_MS = 30000;
+const OFFSCREEN_DOCUMENT_PATH = "offscreen.html";
 const SOCKET_EVENT_BATCH_WINDOW_MS = 150;
 const FETCH_TIMEOUT_MS = 5000;
 const TAB_MESSAGE_TIMEOUT_MS = 3000;
 const TAB_RELOAD_TIMEOUT_MS = 3000;
 const SOCKET_EVENT_BATCH_MAX_RUNTIME_MS = 10000;
 
+let offscreenCreatePromise = null;
 let pendingSocketEvents = [];
 let socketBatchTimer = null;
 let socketBatchInFlight = false;
@@ -625,32 +612,6 @@ async function buildOptionsModel() {
 }
 
 /**
- * Stop the current reconnect loop and reset retry window metadata.
- * @returns {void} Clears reconnect timer state.
- */
-function stopReconnectLoop() {
-  if (reconnectTimer) {
-    clearInterval(reconnectTimer);
-    reconnectTimer = null;
-  }
-  reconnectUntil = 0;
-}
-
-/**
- * Log one connection-loss event and ignore duplicate `error`/`close` cascades for the same outage.
- * @param {string} reason - Human-readable reason for diagnostics.
- * @returns {void} Writes one warning line when outage starts.
- */
-function logConnectionLoss(reason) {
-  if (connectionLossLogged) {
-    return;
-  }
-
-  connectionLossLogged = true;
-  logToBrowserConsole("warn", `[mfci] WebSocket connection lost (${reason}). Retrying every ${RECONNECT_INTERVAL_MS / 1000}s.`);
-}
-
-/**
  * Mirror extension runtime logs to page consoles so developers can see them in regular DevTools.
  * @param {"log"|"warn"|"error"} level - Log severity for console output.
  * @param {string} message - Human-readable log message.
@@ -676,195 +637,111 @@ function logToBrowserConsole(level, message) {
 }
 
 /**
- * Retry WebSocket connection at regular intervals until connection is restored.
- * @returns {void} Starts or keeps an active reconnect loop.
+ * Read whether the offscreen LiveReload context already exists.
+ * @returns {Promise<boolean>} True when an offscreen document is available.
  */
-function scheduleReconnect() {
-  if (socketConnected || reconnectSuspended) {
-    stopReconnectLoop();
-    return;
+async function hasOffscreenDocument() {
+  const offscreenUrl = chrome.runtime.getURL(OFFSCREEN_DOCUMENT_PATH);
+
+  if (chrome.runtime.getContexts) {
+    const contexts = await chrome.runtime.getContexts({
+      contextTypes: ["OFFSCREEN_DOCUMENT"],
+      documentUrls: [offscreenUrl],
+    });
+    return contexts.length > 0;
   }
 
-  const now = Date.now();
-  if (reconnectUntil <= now) {
-    reconnectUntil = now + RECONNECT_WINDOW_MS;
+  if (chrome.offscreen && chrome.offscreen.hasDocument) {
+    return chrome.offscreen.hasDocument();
   }
 
-  if (reconnectTimer) {
-    return;
-  }
-
-  reconnectTimer = setInterval(() => {
-    if (socketConnected) {
-      stopReconnectLoop();
-      return;
-    }
-
-    if (Date.now() >= reconnectUntil) {
-      socketError = "WebSocket reconnect timeout (20s). Use Refresh to retry.";
-      reconnectSuspended = true;
-      logToBrowserConsole("warn", "[mfci] Reconnect attempts stopped after 20s.");
-      stopReconnectLoop();
-      return;
-    }
-
-    connectSocket({ reason: "reconnect" }).catch(() => {});
-  }, RECONNECT_INTERVAL_MS);
-
-  // Try once immediately instead of waiting for the first interval tick.
-  connectSocket({ reason: "reconnect" }).catch(() => {});
+  return false;
 }
 
 /**
- * Connect to LiveReload WebSocket and wire handshake plus event listeners.
+ * Create the offscreen document that owns the long-lived WebSocket.
+ * @returns {Promise<boolean>} True when offscreen ownership is ready.
+ */
+async function ensureOffscreenDocument() {
+  if (!chrome.offscreen || !chrome.offscreen.createDocument) {
+    socketConnected = false;
+    socketError = "Offscreen documents are not supported by this browser.";
+    return false;
+  }
+
+  if (await hasOffscreenDocument()) {
+    return true;
+  }
+
+  if (!offscreenCreatePromise) {
+    offscreenCreatePromise = chrome.offscreen
+      .createDocument({
+        url: OFFSCREEN_DOCUMENT_PATH,
+        reasons: ["WORKERS"],
+        justification: "Keep the local LiveReload WebSocket alive while the extension service worker sleeps.",
+      })
+      .then(() => true)
+      .catch((error) => {
+        socketConnected = false;
+        socketError = String(error.message || error);
+        return false;
+      })
+      .finally(() => {
+        offscreenCreatePromise = null;
+      });
+  }
+
+  return offscreenCreatePromise;
+}
+
+/**
+ * Update the service-worker snapshot exposed in popup/options UI.
+ * @param {any} message - Offscreen status message.
+ * @returns {void} Updates current connection state.
+ */
+function updateSocketStatus(message) {
+  socketConnected = message.connected === true;
+  socketError = typeof message.error === "string" ? message.error : "";
+  socketUrl = typeof message.url === "string" ? message.url : socketUrl;
+}
+
+/**
+ * Ask the offscreen document to own or refresh the LiveReload WebSocket.
  * @param {any} options - Optional connection context (startup/manual/reconnect).
- * @returns {Promise<void>} Completes when socket setup is initialized.
+ * @returns {Promise<void>} Completes after the offscreen context acknowledged the request.
  */
 async function connectSocket(options = {}) {
   const reason = typeof options.reason === "string" ? options.reason : "auto";
   const forceReconnect = options.forceReconnect === true;
-  const isManual = reason === "manual";
-
-  if (reconnectSuspended && !isManual && !forceReconnect) {
-    return;
-  }
-
   const state = await loadState();
   const nextSocketUrl = `ws://${state.global.host}:${state.global.port}/livereload`;
 
-  if (isManual) {
-    reconnectSuspended = false;
-    keepaliveRecoveryLastAttemptAt = 0;
-    socketError = "";
-    connectionLossLogged = false;
-    stopReconnectLoop();
-  }
+  socketUrl = nextSocketUrl;
 
-  if (!forceReconnect && socket && socketUrl === nextSocketUrl && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+  if (!(await ensureOffscreenDocument())) {
     return;
   }
 
-  if (socket) {
-    socket.close();
-    socket = null;
+  const response = await runtimeSendMessage({
+    type: "MFCI_OFFSCREEN_CONNECT",
+    url: nextSocketUrl,
+    reason,
+    forceReconnect,
+  });
+
+  if (response && typeof response === "object") {
+    updateSocketStatus(response);
   }
-
-  socketConnected = false;
-  socketUrl = nextSocketUrl;
-  const currentSocket = new WebSocket(nextSocketUrl);
-  socket = currentSocket;
-
-  currentSocket.addEventListener("open", () => {
-    if (socket !== currentSocket) {
-      return;
-    }
-
-    hasConnectedAtLeastOnce = true;
-    reconnectSuspended = false;
-    keepaliveRecoveryLastAttemptAt = 0;
-    socketConnected = true;
-    socketError = "";
-    stopReconnectLoop();
-    connectionLossLogged = false;
-
-    // Startup reconnects can happen after service-worker wakeups (sleep/resume); avoid noisy duplicate tab logs.
-    if (reason !== "startup" && reason !== "keepalive") {
-      logToBrowserConsole("log", "[mfci] WebSocket connection established.");
-    }
-
-    try {
-      // LiveReload handshake: required so the server starts sending reload notifications.
-      currentSocket.send(
-        JSON.stringify({
-          command: "hello",
-          protocols: LR_PROTOCOLS,
-          ver: "3.0.0",
-        })
-      );
-    } catch (_error) {
-      // Ignore handshake failures and keep listening.
-    }
-  });
-
-  currentSocket.addEventListener("error", () => {
-    if (socket !== currentSocket) {
-      return;
-    }
-
-    socketConnected = false;
-    if (!hasConnectedAtLeastOnce) {
-      socketError = "WebSocket connection failed at page load. Use Refresh to retry.";
-      reconnectSuspended = true;
-      stopReconnectLoop();
-      return;
-    }
-
-    socketError = "WebSocket connection failed. Reconnecting...";
-    logConnectionLoss("error");
-    scheduleReconnect();
-  });
-
-  currentSocket.addEventListener("close", () => {
-    if (socket !== currentSocket) {
-      return;
-    }
-
-    socketConnected = false;
-    if (!hasConnectedAtLeastOnce) {
-      socketError = "WebSocket connection failed at page load. Use Refresh to retry.";
-      reconnectSuspended = true;
-      stopReconnectLoop();
-      return;
-    }
-
-    socketError = "WebSocket disconnected. Reconnecting...";
-    logConnectionLoss("close");
-    scheduleReconnect();
-  });
-
-  currentSocket.addEventListener("message", (event) => {
-    if (socket !== currentSocket) {
-      return;
-    }
-
-    handleSocketMessage(event.data);
-  });
 }
 
 /**
- * Keep WebSocket healthy during long sessions and after sleep/resume cycles.
- * Keepalive retries are throttled once reconnect has been suspended.
- * @returns {Promise<void>} Ensures an active connection is available.
+ * Keep offscreen WebSocket ownership alive after service-worker wakeups.
+ * @param {any} options - Keepalive context from tab/content events.
+ * @returns {Promise<void>} Ensures the offscreen context has the current socket URL.
  */
 async function ensureSocketConnection(options = {}) {
   const trigger = typeof options.trigger === "string" ? options.trigger : "keepalive";
-  const forceReconnect = trigger === "tab-complete";
-
-  if (!hasConnectedAtLeastOnce) {
-    return;
-  }
-
-  if (socketConnected || reconnectTimer) {
-    return;
-  }
-
-  if (reconnectSuspended) {
-    if (forceReconnect) {
-      await connectSocket({ reason: "keepalive", forceReconnect: true });
-      return;
-    }
-
-    const now = Date.now();
-    if (now - keepaliveRecoveryLastAttemptAt < KEEPALIVE_RECOVERY_COOLDOWN_MS) {
-      return;
-    }
-
-    keepaliveRecoveryLastAttemptAt = now;
-    await connectSocket({ reason: "keepalive", forceReconnect: true });
-    return;
-  }
-
-  await connectSocket({ reason: "keepalive" });
+  await connectSocket({ reason: trigger === "tab-complete" ? "startup" : "keepalive" });
 }
 
 /**
@@ -1322,6 +1199,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return updatePort(message);
       case "OPTIONS_DELETE_HOST":
         return deleteHostSettings(message);
+      case "MFCI_OFFSCREEN_SOCKET_STATUS":
+        updateSocketStatus(message);
+        return { ok: true };
+      case "MFCI_OFFSCREEN_SOCKET_MESSAGE":
+        handleSocketMessage(message.data);
+        return { ok: true };
+      case "MFCI_OFFSCREEN_LOG":
+        logToBrowserConsole(message.level, message.message);
+        return { ok: true };
+      case "POPUP_OPENED":
+        await connectSocket({ reason: "keepalive" });
+        await applyToCurrentTab("popup-open");
+        return { ok: true };
       case "POPUP_FORCE_SYNC":
         // Manual refresh should also force a new WebSocket connection attempt.
         await connectSocket({ reason: "manual", forceReconnect: true });

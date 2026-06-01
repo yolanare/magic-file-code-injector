@@ -303,12 +303,12 @@ openOptionsButtonElement.addEventListener("click", () => {
 });
 
 /**
- * Initialize popup state by forcing one connection/sync cycle, then loading the latest model.
- * @returns {Promise<void>} Completes after startup sync attempt and model refresh.
+ * Initialize popup state without forcing a WebSocket reconnect.
+ * @returns {Promise<void>} Completes after best-effort active-tab sync and model refresh.
  */
 async function initializePopup() {
   try {
-    await sendRuntimeMessage({ type: "POPUP_FORCE_SYNC" });
+    await sendRuntimeMessage({ type: "POPUP_OPENED" });
   } catch (_error) {
     // Ignore startup sync failures here; refreshModel renders the actual status message.
   }
