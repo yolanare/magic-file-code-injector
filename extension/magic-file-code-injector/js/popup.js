@@ -10,6 +10,7 @@ const openOptionsButtonElement = document.getElementById("open-options");
 const { sendRuntimeMessage, setStatusMessage } = self.MfciRuntimeUtils;
 
 let model = null;
+let popupFileOrderIds = null;
 
 /**
  * Persist the enabled-file selection for current host then refresh popup model.
@@ -167,6 +168,51 @@ function createMissingFileRow(fileId, enabledFileIds) {
 }
 
 /**
+ * Sort manifest files once per popup lifetime so enabled files start first without live reordering on toggles.
+ * @param {object[]} files - Manifest file descriptors.
+ * @param {Set<string>} enabledFileIds - Enabled file IDs for the current host.
+ * @returns {object[]} Files ordered for the current popup instance.
+ */
+function getPopupOrderedFiles(files, enabledFileIds) {
+  if (!Array.isArray(files) || files.length === 0) {
+    return [];
+  }
+
+  if (!popupFileOrderIds) {
+    const enabledFiles = files.filter((file) => enabledFileIds.has(file.id));
+    const disabledFiles = files.filter((file) => !enabledFileIds.has(file.id));
+    const orderedFiles = [...enabledFiles, ...disabledFiles];
+    popupFileOrderIds = orderedFiles.map((file) => file.id);
+    return orderedFiles;
+  }
+
+  const filesById = new Map(files.map((file) => [file.id, file]));
+  const orderedFiles = [];
+  const renderedIds = new Set();
+
+  for (const fileId of popupFileOrderIds) {
+    const file = filesById.get(fileId);
+    if (!file) {
+      continue;
+    }
+
+    orderedFiles.push(file);
+    renderedIds.add(fileId);
+  }
+
+  for (const file of files) {
+    if (renderedIds.has(file.id)) {
+      continue;
+    }
+
+    orderedFiles.push(file);
+    popupFileOrderIds.push(file.id);
+  }
+
+  return orderedFiles;
+}
+
+/**
  * Render popup/options UI from current model state.
  * @returns {void} Renders current model into UI.
  */
@@ -212,6 +258,7 @@ function render() {
 
   const files = model.manifest && Array.isArray(model.manifest.files) ? model.manifest.files : [];
   const enabledFileIds = new Set(hostState.enabledFileIds);
+  const orderedFiles = getPopupOrderedFiles(files, enabledFileIds);
   const manifestIdSet = new Set(files.map((file) => file.id));
   const missingEnabledFileIds =
     model.manifest && Array.isArray(model.manifest.files) ?
@@ -232,7 +279,7 @@ function render() {
     filesListElement.appendChild(createMissingFileRow(missingFileId, enabledFileIds));
   }
 
-  for (const file of files) {
+  for (const file of orderedFiles) {
     filesListElement.appendChild(createFileRow(file, enabledFileIds));
   }
 }
