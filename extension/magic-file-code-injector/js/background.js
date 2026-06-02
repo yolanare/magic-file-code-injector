@@ -418,6 +418,26 @@ async function fetchManifest(globalState) {
 }
 
 /**
+ * Add a per-sync query value so hot refresh fetches never reuse a previous response for the same URL.
+ * @param {string} url - Absolute file URL.
+ * @param {string} cacheKey - Refresh-specific cache key.
+ * @returns {string} URL with cache-busting query when a key is available.
+ */
+function appendFetchCacheKey(url, cacheKey) {
+  if (!cacheKey) {
+    return url;
+  }
+
+  try {
+    const parsedUrl = new URL(url);
+    parsedUrl.searchParams.set("mfci_fetch", cacheKey);
+    return parsedUrl.toString();
+  } catch (_error) {
+    return `${url}${url.includes("?") ? "&" : "?"}mfci_fetch=${encodeURIComponent(cacheKey)}`;
+  }
+}
+
+/**
  * Fetch file source text for CSS/JS injection payloads.
  * @param {string} url - Absolute URL to fetch.
  * @returns {Promise<string>} Raw file content.
@@ -437,7 +457,7 @@ async function fetchFileText(url) {
  * @param {any} state - Full normalized extension state object.
  * @param {any} hostKey - Domain key used to isolate per-site settings.
  * @param {any} hostState - Per-site configuration including enabled files and JS refresh mode.
- * @param {{fileIds?:string[],fileTypes?:string[]}} options - Optional sync filters used for partial update delivery.
+ * @param {{fileIds?:string[],fileTypes?:string[],cacheKey?:string}} options - Optional sync filters used for partial update delivery.
  * @returns {Promise<object>} Payload sent to content script for tab sync.
  */
 async function buildSyncPayload(state, hostKey, hostState, options = {}) {
@@ -451,6 +471,7 @@ async function buildSyncPayload(state, hostKey, hostState, options = {}) {
   const requestedFileTypes = uniqueStrings(Array.isArray(options.fileTypes) ? options.fileTypes : []).filter(
     (fileType) => fileType === "css" || fileType === "js"
   );
+  const cacheKey = typeof options.cacheKey === "string" && options.cacheKey.length > 0 ? options.cacheKey : manifest.generatedAt;
   const requestedTypeSet = new Set(requestedFileTypes);
   const hasFileIdFilter = requestedSet.size > 0;
   const hasFileTypeFilter = requestedTypeSet.size > 0;
@@ -468,11 +489,12 @@ async function buildSyncPayload(state, hostKey, hostState, options = {}) {
   const files = [];
   for (const file of filesToSync) {
     const url = resolveFileUrl(file, manifest.origin);
-    const content = await fetchFileText(url);
+    const fetchUrl = appendFetchCacheKey(url, cacheKey);
+    const content = await fetchFileText(fetchUrl);
 
     files.push({
       ...file,
-      url,
+      url: fetchUrl,
       content,
     });
   }
@@ -499,7 +521,7 @@ async function getActiveTab() {
  * Synchronize one tab with current host configuration and manifest content.
  * @param {any} tabId - Chrome tab identifier to target.
  * @param {string} reason - Sync reason used for diagnostics and message tracing.
- * @param {{fileIds?:string[],fileTypes?:string[]}} options - Optional sync filters used for partial update delivery.
+ * @param {{fileIds?:string[],fileTypes?:string[],cacheKey?:string}} options - Optional sync filters used for partial update delivery.
  * @returns {Promise<boolean>} True when sync payload is delivered to content script.
  */
 async function syncTab(tabId, reason, options = {}) {
@@ -1386,6 +1408,7 @@ async function flushSocketEventBatch() {
   const events = pendingSocketEvents;
   pendingSocketEvents = [];
   let batchResult = { ok: true, flushed: true };
+  const batchCacheKey = `${Date.now()}-${batchGeneration}`;
 
   try {
     const state = await loadState();
@@ -1460,7 +1483,7 @@ async function flushSocketEventBatch() {
         }
 
         if (fileType === "css") {
-          const synced = await syncTab(tab.id, "css-change", { fileIds: affectedIds });
+          const synced = await syncTab(tab.id, "css-change", { fileIds: affectedIds, cacheKey: batchCacheKey });
           if (synced) {
             await logToBrowserTabConsole(tab.id, "info", formatRefreshLogMessage("css", affectedIds, false));
           }

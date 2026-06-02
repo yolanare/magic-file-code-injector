@@ -529,11 +529,11 @@ function startDevServer(inputConfig = {}, options = {}) {
 
     const buildRuntime = {
         isRunning: false,
-        pendingSourcePaths: new Set(),
+        pendingSourcePathCounts: new Map(),
         pendingGeneralReason: '',
     };
 
-    const pendingRefreshByPath = new Map();
+    const pendingRefreshEvents = [];
     let refreshBatchTimer = null;
     let outputRefreshBatchInFlight = false;
     let originalRefresh = null;
@@ -564,13 +564,46 @@ function startDevServer(inputConfig = {}, options = {}) {
     }
 
     /**
+     * Queue one source path without losing repeated saves on the same file.
+     * @param {string} sourcePath - Changed source path to build.
+     * @returns {void}
+     */
+    function queueSourceBuild(sourcePath) {
+        const pendingCount = buildRuntime.pendingSourcePathCounts.get(sourcePath) || 0;
+        buildRuntime.pendingSourcePathCounts.set(sourcePath, pendingCount + 1);
+    }
+
+    /**
+     * Take the next pending source path while preserving duplicate save events.
+     * @returns {string} Next source path, or empty string when no source work is pending.
+     */
+    function takeNextPendingSourcePath() {
+        const iterator = buildRuntime.pendingSourcePathCounts.entries().next();
+        if (iterator.done) {
+            return '';
+        }
+
+        const [sourcePath, pendingCount] = iterator.value;
+        if (pendingCount <= 1) {
+            buildRuntime.pendingSourcePathCounts.delete(sourcePath);
+        } else {
+            buildRuntime.pendingSourcePathCounts.set(sourcePath, pendingCount - 1);
+        }
+
+        return sourcePath;
+    }
+
+    /**
      * Queue one output refresh path for debounced signal dispatch.
      * @param {string} filePath - Output path to refresh.
      * @returns {void} Stores path and schedules flush.
      */
     function queueOutputRefresh(filePath) {
         const absolutePath = path.resolve(filePath);
-        pendingRefreshByPath.set(absolutePath, inferReloadType(absolutePath));
+        pendingRefreshEvents.push({
+            filePath: absolutePath,
+            reloadType: inferReloadType(absolutePath),
+        });
         scheduleRefreshBatchFlush();
     }
 
@@ -598,22 +631,21 @@ function startDevServer(inputConfig = {}, options = {}) {
             return;
         }
 
-        if (pendingRefreshByPath.size === 0) {
+        if (pendingRefreshEvents.length === 0) {
             return;
         }
 
         outputRefreshBatchInFlight = true;
-        const batchEntries = Array.from(pendingRefreshByPath.entries()).sort(([left], [right]) => left.localeCompare(right));
-        pendingRefreshByPath.clear();
+        const batchEntries = pendingRefreshEvents.splice(0, pendingRefreshEvents.length);
 
         try {
-            for (const [filePath, reloadType] of batchEntries) {
+            for (const { filePath, reloadType } of batchEntries) {
                 logRefreshSignal(filePath, reloadType);
                 originalRefresh(toLiveReloadPath(config, filePath));
             }
         } finally {
             outputRefreshBatchInFlight = false;
-            if (pendingRefreshByPath.size > 0) {
+            if (pendingRefreshEvents.length > 0) {
                 scheduleRefreshBatchFlush();
             }
         }
@@ -629,7 +661,7 @@ function startDevServer(inputConfig = {}, options = {}) {
         const normalizedSourcePath = typeof sourcePath === 'string' && sourcePath.length > 0 ? path.resolve(sourcePath) : '';
 
         if (reason === 'source-change' && normalizedSourcePath) {
-            buildRuntime.pendingSourcePaths.add(normalizedSourcePath);
+            queueSourceBuild(normalizedSourcePath);
         } else {
             buildRuntime.pendingGeneralReason = reason;
         }
@@ -645,9 +677,8 @@ function startDevServer(inputConfig = {}, options = {}) {
                 let runReason = buildRuntime.pendingGeneralReason || reason;
                 let runSourcePath = '';
 
-                if (buildRuntime.pendingSourcePaths.size > 0) {
-                    const nextSourcePath = buildRuntime.pendingSourcePaths.values().next().value;
-                    buildRuntime.pendingSourcePaths.delete(nextSourcePath);
+                if (buildRuntime.pendingSourcePathCounts.size > 0) {
+                    const nextSourcePath = takeNextPendingSourcePath();
                     runReason = 'source-change';
                     runSourcePath = nextSourcePath;
                 } else {
@@ -677,7 +708,7 @@ function startDevServer(inputConfig = {}, options = {}) {
                         }
                     }
                 }
-            } while (buildRuntime.pendingSourcePaths.size > 0 || buildRuntime.pendingGeneralReason);
+            } while (buildRuntime.pendingSourcePathCounts.size > 0 || buildRuntime.pendingGeneralReason);
         } catch (error) {
             const message = String(error && error.message ? error.message : error);
             logServer(config, 'error', `Build failed: ${message}`);
