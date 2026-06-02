@@ -2,15 +2,62 @@ const hostValueElement = document.getElementById("host-value");
 const serverValueElement = document.getElementById("server-value");
 const statusMessageElement = document.getElementById("status-message");
 const globalInjectionEnabledElement = document.getElementById("global-injection-enabled");
+const injectScopeTypeElement = document.getElementById("inject-scope-type");
+const injectScopeRegexRowElement = document.getElementById("inject-scope-regex-row");
+const injectScopeRegexElement = document.getElementById("inject-scope-regex");
+const injectScopeStatusElement = document.getElementById("inject-scope-status");
 const autoRefreshJsElement = document.getElementById("auto-refresh-js");
 const pendingJsElement = document.getElementById("pending-js");
 const filesListElement = document.getElementById("files-list");
 const refreshButtonElement = document.getElementById("refresh-model");
 const openOptionsButtonElement = document.getElementById("open-options");
 const { sendRuntimeMessage, setStatusMessage } = self.MfciRuntimeUtils;
+const { DEFAULT_SCOPE_TYPE, isRegexScope, parseScopeKey, getDefaultRegexForScope } = self.MfciScopeUtils;
 
 let model = null;
 let popupFileOrderIds = null;
+let popupFileOrderScopeKey = null;
+
+function getCurrentInjectScopeParts() {
+  if (model.hostKey) {
+    return parseScopeKey(model.hostKey);
+  }
+  if (model.scope && model.scope.key) {
+    return parseScopeKey(model.scope.key);
+  }
+  return { type: injectScopeTypeElement.value, value: "" };
+}
+
+function syncInjectScopeRegexInput() {
+  const usesRegex = isRegexScope(injectScopeTypeElement.value);
+  injectScopeRegexRowElement.classList.toggle("hidden", !usesRegex);
+  if (usesRegex && injectScopeRegexElement.value.trim() === "") {
+    injectScopeRegexElement.value = getDefaultRegexForScope(getCurrentInjectScopeParts());
+  }
+}
+
+function getSelectedInjectScope() {
+  syncInjectScopeRegexInput();
+  return {
+    scopeType: injectScopeTypeElement.value,
+    regex: injectScopeRegexElement.value,
+  };
+}
+
+function setInjectScopeStatus(message) {
+  injectScopeStatusElement.classList.toggle("hidden", !message);
+  injectScopeStatusElement.textContent = message;
+}
+
+function getRenderedInjectScopeRegex(savedScope, scope) {
+  if (savedScope && isRegexScope(savedScope.type)) {
+    return savedScope.value;
+  }
+  if (isRegexScope(scope.type)) {
+    return scope.regex || model.global.injectScopeRegex || "";
+  }
+  return "";
+}
 
 /**
  * Persist the enabled-file selection for current host then refresh popup model.
@@ -18,12 +65,39 @@ let popupFileOrderIds = null;
  * @returns {Promise<void>} Saves selection and reloads popup state.
  */
 async function updateEnabledFileSelection(nextSelection) {
-  await sendRuntimeMessage({
+  const response = await sendRuntimeMessage({
     type: "POPUP_SET_ENABLED_FILES",
     hostKey: model.hostKey,
     tabId: model.tabId,
     enabledFileIds: Array.from(nextSelection),
   });
+
+  if (!response || response.ok !== true) {
+    setStatusMessage(statusMessageElement, (response && response.error) || "Unable to update enabled files.", true);
+    return;
+  }
+
+  await refreshModel();
+}
+
+/**
+ * Persist the active injection target and resync current popup model.
+ * @param {{scopeType:string,regex:string}} scopeInput - Selected injection scope values.
+ * @returns {Promise<void>} Saves scope and reloads popup state.
+ */
+async function updateInjectScope(scopeInput) {
+  const response = await sendRuntimeMessage({
+    type: "POPUP_SET_INJECT_SCOPE",
+    hostKey: model.hostKey,
+    tabId: model.tabId,
+    scopeType: scopeInput.scopeType,
+    regex: scopeInput.regex,
+  });
+
+  if (!response || response.ok !== true) {
+    setStatusMessage(statusMessageElement, (response && response.error) || "Unable to update injection scope.", true);
+    return;
+  }
 
   await refreshModel();
 }
@@ -178,11 +252,13 @@ function getPopupOrderedFiles(files, enabledFileIds) {
     return [];
   }
 
-  if (!popupFileOrderIds) {
+  const scopeKey = model && model.hostKey ? model.hostKey : "";
+  if (!popupFileOrderIds || popupFileOrderScopeKey !== scopeKey) {
     const enabledFiles = files.filter((file) => enabledFileIds.has(file.id));
     const disabledFiles = files.filter((file) => !enabledFileIds.has(file.id));
     const orderedFiles = [...enabledFiles, ...disabledFiles];
     popupFileOrderIds = orderedFiles.map((file) => file.id);
+    popupFileOrderScopeKey = scopeKey;
     return orderedFiles;
   }
 
@@ -213,13 +289,50 @@ function getPopupOrderedFiles(files, enabledFileIds) {
 }
 
 /**
+ * Render injection-scope controls from current popup model.
+ * @returns {void} Updates select labels, regex field and scope diagnostics.
+ */
+function renderInjectScopeControls() {
+  const scope = model.scope || {};
+  const labels = scope.labels || {};
+  const savedScope = model.hostKey ? parseScopeKey(model.hostKey) : null;
+
+  for (const option of Array.from(injectScopeTypeElement.options)) {
+    option.textContent = labels[option.value] || option.value;
+  }
+
+  injectScopeTypeElement.value = (savedScope && savedScope.type) || scope.type || model.global.injectScopeType || DEFAULT_SCOPE_TYPE;
+  injectScopeRegexElement.value = getRenderedInjectScopeRegex(savedScope, scope);
+
+  syncInjectScopeRegexInput();
+
+  if (!isRegexScope(injectScopeTypeElement.value)) {
+    setInjectScopeStatus("");
+    return;
+  }
+
+  if (!scope.valid) {
+    setInjectScopeStatus(scope.error || "Enter a valid regex to target pages.");
+    return;
+  }
+
+  if (!scope.matchesCurrentUrl) {
+    setInjectScopeStatus("Regex does not match this page.");
+    return;
+  }
+
+  setInjectScopeStatus("");
+}
+
+/**
  * Render popup/options UI from current model state.
  * @returns {void} Renders current model into UI.
  */
 function render() {
-  hostValueElement.textContent = model.hostKey || "No active web page";
+  hostValueElement.textContent = model.hostKey || (model.scope && model.scope.label) || "No active web page";
   serverValueElement.textContent = model.server.origin;
   globalInjectionEnabledElement.checked = model.global.injectionEnabled !== false;
+  renderInjectScopeControls();
 
   const serverProblems = [];
   if (model.server.error) {
@@ -298,16 +411,38 @@ async function refreshModel() {
   }
 }
 
+injectScopeTypeElement.addEventListener("change", async () => {
+  await updateInjectScope(getSelectedInjectScope());
+});
+
+injectScopeRegexElement.addEventListener("change", async () => {
+  await updateInjectScope(getSelectedInjectScope());
+});
+
+injectScopeRegexElement.addEventListener("keydown", async (event) => {
+  if (event.key !== "Enter") {
+    return;
+  }
+
+  event.preventDefault();
+  await updateInjectScope(getSelectedInjectScope());
+});
+
 autoRefreshJsElement.addEventListener("change", async () => {
   if (!model || !model.hostKey) {
     return;
   }
 
-  await sendRuntimeMessage({
+  const response = await sendRuntimeMessage({
     type: "POPUP_SET_AUTO_REFRESH_JS",
     hostKey: model.hostKey,
     autoRefreshJs: autoRefreshJsElement.checked,
   });
+
+  if (!response || response.ok !== true) {
+    setStatusMessage(statusMessageElement, (response && response.error) || "Unable to update JS auto-refresh.", true);
+    return;
+  }
 
   await refreshModel();
 });

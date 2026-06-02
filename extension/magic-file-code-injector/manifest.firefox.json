@@ -10,6 +10,7 @@
   },
   "background": {
     "scripts": [
+      "js/scope-utils.js",
       "js/background-utils.js",
       "js/background.js"
     ]

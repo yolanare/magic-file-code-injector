@@ -1,6 +1,6 @@
 // Chrome MV3 loads this as a service worker; Firefox loads it as a background script.
 if (!self.MfciBackgroundUtils && typeof importScripts === "function") {
-  importScripts("background-utils.js");
+  importScripts("scope-utils.js", "background-utils.js");
 }
 
 if (!self.MfciBackgroundUtils) {
@@ -13,12 +13,17 @@ const {
   uniqueStrings,
   normalizeHostState,
   normalizeState,
+  normalizeInjectScopeType,
+  normalizeInjectScopeRegex,
+  validatePort,
   getServerOrigin,
   getManifestUrl,
   normalizeChangedPath,
   inferFileTypeFromPath,
   normalizePathFromFileId,
   getHostKey,
+  getInjectScopeDetails,
+  getBestMatchingHostKey,
   normalizeManifestFile,
   resolveFileUrl,
   formatRefreshLogMessage,
@@ -381,6 +386,57 @@ function getOrCreateHostState(state, hostKey) {
 }
 
 /**
+ * Resolve the storage key for one scope while migrating legacy subdomain entries on first write/read.
+ * @param {any} state - Full normalized extension state object.
+ * @param {object|null} scopeDetails - Scope details resolved from the active URL.
+ * @returns {string} Storage key to use for this scope.
+ */
+function resolveScopeStorageKey(state, scopeDetails) {
+  if (!scopeDetails || !scopeDetails.key) {
+    return "";
+  }
+
+  const legacyKey = typeof scopeDetails.legacyKey === "string" ? scopeDetails.legacyKey : "";
+  if (!legacyKey || scopeDetails.key === legacyKey || !state.hosts[legacyKey]) {
+    return scopeDetails.key;
+  }
+
+  if (!state.hosts[scopeDetails.key]) {
+    state.hosts[scopeDetails.key] = state.hosts[legacyKey];
+    delete state.hosts[legacyKey];
+    state.__mfciScopeStorageMigrated = true;
+  }
+
+  return scopeDetails.key;
+}
+
+/**
+ * Return whether resolving a scope key migrated an old unprefixed hostname key.
+ * @param {any} state - Full normalized extension state object.
+ * @param {object|null} scopeDetails - Scope details resolved from the active URL.
+ * @returns {boolean} True when the prefixed key now exists and legacy key was removed.
+ */
+function didMigrateScopeStorageKey(state, scopeDetails) {
+  return Boolean(scopeDetails && state.__mfciScopeStorageMigrated === true);
+}
+
+function moveHostSettings(state, hostKey, nextHostKey) {
+  if (hostKey === nextHostKey) {
+    return { ok: true, changed: false };
+  }
+  if (!state.hosts[hostKey]) {
+    return { ok: false, error: "Saved target not found." };
+  }
+  if (state.hosts[nextHostKey]) {
+    return { ok: false, error: "Another saved target already uses this value." };
+  }
+
+  state.hosts[nextHostKey] = state.hosts[hostKey];
+  delete state.hosts[hostKey];
+  return { ok: true, changed: true };
+}
+
+/**
  * Return read-safe host state used by UI even when host has no stored config.
  * @param {any} state - Full normalized extension state object.
  * @param {any} hostKey - Domain key used to isolate per-site settings.
@@ -532,12 +588,16 @@ async function syncTab(tabId, reason, options = {}) {
     return false;
   }
 
-  const hostKey = tab && tab.url ? getHostKey(tab.url) : null;
-  if (!hostKey) {
+  if (!tab || !tab.url || !getHostKey(tab.url)) {
     return false;
   }
 
   const state = await loadState();
+  const scopeDetails = getInjectScopeDetails(tab.url, state.global, { requireMatch: true });
+  const hostKey = getBestMatchingHostKey(tab.url, state.hosts) || resolveScopeStorageKey(state, scopeDetails);
+  if (didMigrateScopeStorageKey(state, scopeDetails)) {
+    await saveState(state);
+  }
   const hasStoredHostState = Boolean(state.hosts[hostKey]);
   const hostState = hasStoredHostState ? normalizeHostState(state.hosts[hostKey]) : { ...DEFAULT_HOST_STATE };
 
@@ -565,14 +625,18 @@ async function syncTab(tabId, reason, options = {}) {
 }
 
 /**
- * Clear deferred JS update markers once a page reload applied them.
- * @param {any} hostKey - Domain key used to isolate per-site settings.
- * @returns {Promise<void>} Completes after pending JS markers are cleared.
+ * Clear pending JS markers for the scope that currently matches one tab URL.
+ * @param {string} urlValue - Tab URL.
+ * @returns {Promise<void>} Completes after best-effort pending marker cleanup.
  */
-async function clearPendingUpdatesForHost(hostKey) {
+async function clearPendingUpdatesForTabUrl(urlValue) {
   const state = await loadState();
-  const hostState = state.hosts[hostKey];
+  const hostKey = getBestMatchingHostKey(urlValue, state.hosts);
+  if (!hostKey) {
+    return;
+  }
 
+  const hostState = state.hosts[hostKey];
   if (!hostState || hostState.pendingJsUpdateIds.length === 0) {
     return;
   }
@@ -658,7 +722,7 @@ async function applyGlobalEnableWithRefreshFlow(state) {
       continue;
     }
 
-    const hostKey = getHostKey(tab.url);
+    const hostKey = getBestMatchingHostKey(tab.url, state.hosts);
     if (!hostKey) {
       continue;
     }
@@ -726,7 +790,12 @@ async function buildPopupModel() {
   const state = await loadState();
   const activeTab = await getActiveTab();
 
-  const hostKey = activeTab && activeTab.url ? getHostKey(activeTab.url) : null;
+  const scopeDetails = activeTab && activeTab.url ? getInjectScopeDetails(activeTab.url, state.global) : null;
+  const hostKey =
+    activeTab && activeTab.url ? getBestMatchingHostKey(activeTab.url, state.hosts) || resolveScopeStorageKey(state, scopeDetails) : "";
+  if (didMigrateScopeStorageKey(state, scopeDetails)) {
+    await saveState(state);
+  }
   const hostState = getExistingHostState(state, hostKey);
 
   let manifest = null;
@@ -746,6 +815,7 @@ async function buildPopupModel() {
     ok: true,
     tabId: activeTab && typeof activeTab.id === "number" ? activeTab.id : null,
     hostKey,
+    scope: scopeDetails,
     global: state.global,
     hostState,
     manifest,
@@ -1454,7 +1524,7 @@ async function flushSocketEventBatch() {
         continue;
       }
 
-      const hostKey = getHostKey(tab.url);
+      const hostKey = getBestMatchingHostKey(tab.url, state.hosts);
       if (!hostKey) {
         continue;
       }
@@ -1555,8 +1625,13 @@ function handleSocketMessage(rawMessage) {
  * @returns {Promise<object>} Mutation result for enabled file settings.
  */
 async function updateHostFileSelection(message) {
+  const hostKey = typeof message.hostKey === "string" && message.hostKey.length > 0 ? message.hostKey : "";
+  if (!hostKey) {
+    return { ok: false, error: "No active injection scope." };
+  }
+
   const state = await loadState();
-  const hostState = getOrCreateHostState(state, message.hostKey);
+  const hostState = getOrCreateHostState(state, hostKey);
 
   hostState.enabledFileIds = uniqueStrings(Array.isArray(message.enabledFileIds) ? message.enabledFileIds : []);
   hostState.pendingJsUpdateIds = hostState.pendingJsUpdateIds.filter((fileId) => hostState.enabledFileIds.includes(fileId));
@@ -1582,11 +1657,68 @@ async function updateHostFileSelection(message) {
  * @returns {Promise<object>} Mutation result for auto-refresh setting.
  */
 async function updateAutoRefresh(message) {
+  const hostKey = typeof message.hostKey === "string" && message.hostKey.length > 0 ? message.hostKey : "";
+  if (!hostKey) {
+    return { ok: false, error: "No active injection scope." };
+  }
+
   const state = await loadState();
-  const hostState = getOrCreateHostState(state, message.hostKey);
+  const hostState = getOrCreateHostState(state, hostKey);
 
   hostState.autoRefreshJs = message.autoRefreshJs === true;
   await saveState(state);
+
+  return { ok: true };
+}
+
+/**
+ * Update the current popup target: saved targets are renamed, unsaved targets update the popup draft.
+ * @param {any} message - Runtime message payload received from popup.
+ * @returns {Promise<object>} Mutation result for current popup target settings.
+ */
+async function updatePopupInjectScope(message) {
+  const state = await loadState();
+  const hostKey = typeof message.hostKey === "string" ? message.hostKey.trim() : "";
+  const hasSavedHost = Boolean(hostKey && state.hosts[hostKey]);
+
+  if (!hasSavedHost) {
+    state.global.injectScopeType = normalizeInjectScopeType(message.scopeType);
+    state.global.injectScopeRegex = normalizeInjectScopeRegex(message.regex);
+    await saveState(state);
+    await applyToAllTabs("inject-scope-draft-change");
+    return { ok: true };
+  }
+
+  const tab =
+    typeof message.tabId === "number" ?
+      await tabGet(message.tabId).catch(() => null)
+    : await getActiveTab();
+  if (!tab || typeof tab.url !== "string") {
+    return { ok: false, error: "No active page for this injection target." };
+  }
+
+  const nextScopeDetails = getInjectScopeDetails(
+    tab.url,
+    {
+      ...state.global,
+      injectScopeType: normalizeInjectScopeType(message.scopeType),
+      injectScopeRegex: normalizeInjectScopeRegex(message.regex),
+    },
+    { requireMatch: true },
+  );
+
+  if (!nextScopeDetails || !nextScopeDetails.key) {
+    return { ok: false, error: "Injection target does not match the active page." };
+  }
+
+  const moveResult = moveHostSettings(state, hostKey, nextScopeDetails.key);
+  if (!moveResult.ok) {
+    return { ok: false, error: moveResult.error };
+  }
+  if (moveResult.changed) {
+    await saveState(state);
+    await applyToAllTabs("inject-scope-target-change");
+  }
 
   return { ok: true };
 }
@@ -1621,16 +1753,13 @@ async function updateGlobalInjectionEnabled(message) {
  * @returns {Promise<object>} Mutation result for global port setting.
  */
 async function updatePort(message) {
-  const parsedPort = Number(message.port);
-  if (!Number.isInteger(parsedPort) || parsedPort < 1 || parsedPort > 65535) {
-    return {
-      ok: false,
-      error: "Port must be a number between 1 and 65535.",
-    };
+  const portValidation = validatePort(message.port);
+  if (!portValidation.ok) {
+    return { ok: false, error: portValidation.error };
   }
 
   const state = await loadState();
-  state.global.port = parsedPort;
+  state.global.port = portValidation.port;
   await saveState(state);
 
   await connectSocket({ reason: "manual" });
@@ -1658,17 +1787,32 @@ async function deleteHostSettings(message) {
   delete state.hosts[hostKey];
   await saveState(state);
 
-  const tabs = await tabsQuery({ url: ["http://*/*", "https://*/*"] });
-  for (const tab of tabs) {
-    if (typeof tab.id !== "number" || !tab.url) {
-      continue;
-    }
+  await applyToAllTabs("host-settings-deleted");
 
-    if (getHostKey(tab.url) !== hostKey) {
-      continue;
-    }
+  return { ok: true };
+}
 
-    await syncTab(tab.id, "host-settings-deleted");
+/**
+ * Rename one saved injection target without losing its enabled files.
+ * @param {any} message - Runtime message payload received from options.
+ * @returns {Promise<object>} Rename result.
+ */
+async function renameHostSettings(message) {
+  const hostKey = typeof message.hostKey === "string" ? message.hostKey.trim() : "";
+  const nextHostKey = typeof message.nextHostKey === "string" ? message.nextHostKey.trim() : "";
+
+  if (!hostKey || !nextHostKey) {
+    return { ok: false, error: "Both current and next targets are required." };
+  }
+
+  const state = await loadState();
+  const moveResult = moveHostSettings(state, hostKey, nextHostKey);
+  if (!moveResult.ok) {
+    return { ok: false, error: moveResult.error };
+  }
+  if (moveResult.changed) {
+    await saveState(state);
+    await applyToAllTabs("host-settings-renamed");
   }
 
   return { ok: true };
@@ -1685,7 +1829,8 @@ async function recordInjectionError(sender, message) {
     return { ok: true };
   }
 
-  const hostKey = getHostKey(sender.tab.url);
+  const state = await loadState();
+  const hostKey = getBestMatchingHostKey(sender.tab.url, state.hosts);
   if (!hostKey) {
     return { ok: true };
   }
@@ -1693,7 +1838,6 @@ async function recordInjectionError(sender, message) {
   const fileId = typeof message.fileId === "string" ? message.fileId : "unknown";
   const errorMessage = typeof message.error === "string" ? message.error : "Unknown script error.";
 
-  const state = await loadState();
   const hostState = getOrCreateHostState(state, hostKey);
   hostState.lastError = `${fileId}: ${errorMessage}`;
   await saveState(state);
@@ -1716,6 +1860,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return updateHostFileSelection(message);
       case "POPUP_SET_AUTO_REFRESH_JS":
         return updateAutoRefresh(message);
+      case "POPUP_SET_INJECT_SCOPE":
+        return updatePopupInjectScope(message);
       case "POPUP_SET_GLOBAL_INJECTION":
         return updateGlobalInjectionEnabled(message);
       case "POPUP_SET_PORT":
@@ -1723,6 +1869,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return updatePort(message);
       case "OPTIONS_DELETE_HOST":
         return deleteHostSettings(message);
+      case "OPTIONS_RENAME_HOST":
+        return renameHostSettings(message);
       case "MFCI_OFFSCREEN_SOCKET_STATUS":
         updateSocketStatus(message);
         return { ok: true };
@@ -1763,10 +1911,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           }
 
           initialLoadSyncedTabIds.add(sender.tab.id);
-          const hostKey = getHostKey(sender.tab.url || "");
-          if (hostKey) {
-            await clearPendingUpdatesForHost(hostKey);
-          }
+          await clearPendingUpdatesForTabUrl(sender.tab.url || "");
 
           const cssSynced = await syncTab(sender.tab.id, "content-ready-css", { fileTypes: ["css"] });
           const jsSynced = await syncTab(sender.tab.id, "content-ready-js", { fileTypes: ["js"] });
@@ -1798,8 +1943,8 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   (async () => {
     // Read tab again to avoid missing URL snapshots from the onUpdated payload.
     const latestTab = await tabGet(tabId).catch(() => null);
-    const hostKey = getHostKey((latestTab && latestTab.url) || (tab && tab.url) || "");
-    if (!hostKey) {
+    const tabUrl = (latestTab && latestTab.url) || (tab && tab.url) || "";
+    if (!getHostKey(tabUrl)) {
       return;
     }
 
@@ -1812,7 +1957,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     initialLoadSyncedTabIds.add(tabId);
 
     // Important: clear pending JS markers before sync to prevent state overwrite races.
-    await clearPendingUpdatesForHost(hostKey);
+    await clearPendingUpdatesForTabUrl(tabUrl);
     await syncTab(tabId, "tab-complete");
   })().catch(() => {});
 });

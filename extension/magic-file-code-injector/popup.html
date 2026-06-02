@@ -18,7 +18,7 @@
 
       <section class="panel">
         <div class="row">
-          <span class="label">Domain</span>
+          <span class="label">Scope</span>
           <span id="host-value" class="mono">-</span>
         </div>
         <div class="row">
@@ -29,6 +29,19 @@
       </section>
 
       <section class="panel">
+        <div class="control-row">
+          <label class="label" for="inject-scope-type">Inject on:</label>
+          <select id="inject-scope-type" class="select">
+            <option value="domain">domain</option>
+            <option value="subdomain">subdomain</option>
+            <option value="page">page</option>
+            <option value="regex">regex</option>
+          </select>
+        </div>
+        <div id="inject-scope-regex-row" class="regex-row hidden">
+          <input id="inject-scope-regex" class="input mono" type="text" placeholder="https://.*\\.domain\\.com/.*" />
+        </div>
+        <div id="inject-scope-status" class="status status-warning hidden"></div>
         <label class="checkbox-row" for="global-injection-enabled">
           <input id="global-injection-enabled" type="checkbox" />
           <span>Enable injection globally</span>
@@ -46,6 +59,7 @@
       </section>
     </main>
 
+    <script src="js/scope-utils.js"></script>
     <script src="js/runtime-utils.js"></script>
     <script src="js/popup.js"></script>
   </body>

@@ -5,8 +5,22 @@ const portInputElement = document.getElementById("port-input");
 const siteListElement = document.getElementById("site-list");
 const refreshOptionsElement = document.getElementById("refresh-options");
 const { sendRuntimeMessage, setStatusMessage } = self.MfciRuntimeUtils;
+const { SCOPE_TYPES, isRegexScope, parseScopeKey, getDefaultRegexForScope, getScopeValueForType, validateScopeFields } = self.MfciScopeUtils;
 
 let model = null;
+
+function setInlineError(element, message) {
+  element.classList.toggle("hidden", !message);
+  element.textContent = message;
+}
+
+function getEditedScopeValue(scope, scopeType, input) {
+  return isRegexScope(scopeType) ? input.value : getScopeValueForType(scope, scopeType);
+}
+
+function getEditedScopeKey(scope, scopeType, input) {
+  return validateScopeFields(scopeType, getEditedScopeValue(scope, scopeType, input)).key;
+}
 
 /**
  * Render the enabled-file list shown in options for one host.
@@ -42,6 +56,86 @@ function createEnabledFilesBlock(enabledFileIds) {
 
   block.appendChild(list);
   return block;
+}
+
+/**
+ * Render editable injection target controls for one saved settings row.
+ * @param {string} hostKey - Saved scope key.
+ * @returns {HTMLElement} Editable scope form.
+ */
+function createScopeEditor(hostKey) {
+  const scope = parseScopeKey(hostKey);
+  const form = document.createElement("form");
+  form.className = "scope-editor";
+
+  const select = document.createElement("select");
+  select.className = "select";
+  for (const scopeType of SCOPE_TYPES) {
+    select.add(new Option(scopeType, scopeType));
+  }
+  select.value = scope.type;
+
+  const input = document.createElement("input");
+  input.className = "input mono";
+  input.type = "text";
+  input.value = isRegexScope(scope.type) ? scope.value : "";
+  input.placeholder = "https://.*\\.domain\\.com/.*";
+  input.classList.toggle("hidden", !isRegexScope(scope.type));
+
+  const saveButton = document.createElement("button");
+  saveButton.className = "button";
+  saveButton.type = "submit";
+  saveButton.textContent = "Save";
+  saveButton.classList.add("hidden");
+
+  const status = document.createElement("div");
+  status.className = "status status-error hidden";
+
+  function syncScopeEditor() {
+    const usesRegex = isRegexScope(select.value);
+    input.classList.toggle("hidden", !usesRegex);
+    if (usesRegex && input.value.trim() === "") {
+      input.value = getDefaultRegexForScope(scope);
+    }
+
+    saveButton.classList.toggle("hidden", getEditedScopeKey(scope, select.value, input) === hostKey);
+    setInlineError(status, "");
+  }
+
+  select.addEventListener("change", () => {
+    syncScopeEditor();
+  });
+  input.addEventListener("input", syncScopeEditor);
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+
+    const validation = validateScopeFields(select.value, getEditedScopeValue(scope, select.value, input));
+    if (!validation.ok) {
+      setInlineError(status, validation.error);
+      return;
+    }
+
+    const response = await sendRuntimeMessage({
+      type: "OPTIONS_RENAME_HOST",
+      hostKey,
+      nextHostKey: validation.key,
+    });
+
+    if (!response || response.ok !== true) {
+      setInlineError(status, (response && response.error) || "Failed to update injection target.");
+      return;
+    }
+
+    await refreshModel();
+  });
+
+  form.appendChild(select);
+  form.appendChild(input);
+  form.appendChild(saveButton);
+  form.appendChild(status);
+  syncScopeEditor();
+  return form;
 }
 
 /**
@@ -91,13 +185,18 @@ function createSiteRow(hostKey, hostState) {
       return;
     }
 
-    await refreshModel();
+    delete model.hosts[hostKey];
+    row.remove();
+    if (Object.keys(model.hosts).length === 0) {
+      renderSites(model.hosts);
+    }
   });
 
   top.appendChild(meta);
   top.appendChild(removeButton);
 
   row.appendChild(top);
+  row.appendChild(createScopeEditor(hostKey));
   row.appendChild(createEnabledFilesBlock(hostState.enabledFileIds));
 
   return row;

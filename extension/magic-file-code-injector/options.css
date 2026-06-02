@@ -55,6 +55,13 @@ h2 {
   gap: 8px;
 }
 
+.control-row {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  align-items: center;
+  gap: 10px;
+}
+
 .label {
   color: #4b5975;
 }
@@ -71,6 +78,39 @@ input[type="number"] {
   border-radius: 6px;
   padding: 6px 8px;
   font-size: 13px;
+}
+
+.select,
+.input {
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+  border: 1px solid #cad4e8;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #1a2233;
+  padding: 6px 8px;
+  font-size: 13px;
+}
+
+.regex-row {
+  width: 100%;
+}
+
+.scope-editor {
+  display: grid;
+  grid-template-columns: 130px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: start;
+}
+
+.scope-editor .button {
+  justify-self: start;
+  white-space: nowrap;
+}
+
+.scope-editor .status {
+  grid-column: 2 / -1;
 }
 
 .button {
@@ -112,6 +152,10 @@ input[type="number"] {
 
 .status-error {
   color: #b42318;
+}
+
+.hidden {
+  display: none;
 }
 
 .site-list {

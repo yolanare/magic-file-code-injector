@@ -53,6 +53,14 @@ h2 {
   font-size: 12px;
 }
 
+.control-row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
 .label {
   color: #4f5b72;
 }
@@ -88,6 +96,24 @@ h2 {
 
 .button-secondary:hover {
   background: #dde6f8;
+}
+
+.select,
+.input {
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+  border: 1px solid #cad5ea;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #1e2430;
+  font-size: 12px;
+  padding: 5px 8px;
+}
+
+.regex-row {
+  display: block;
+  width: 100%;
 }
 
 .checkbox-row {
