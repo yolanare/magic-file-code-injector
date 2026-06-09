@@ -65,6 +65,7 @@ function createEnabledFilesBlock(enabledFileIds) {
  */
 function createScopeEditor(hostKey) {
   const scope = parseScopeKey(hostKey);
+  let savedScopeKey = hostKey;
   const form = document.createElement("form");
   form.className = "scope-editor";
 
@@ -98,7 +99,7 @@ function createScopeEditor(hostKey) {
       input.value = getDefaultRegexForScope(scope);
     }
 
-    saveButton.classList.toggle("hidden", getEditedScopeKey(scope, select.value, input) === hostKey);
+    saveButton.classList.toggle("hidden", getEditedScopeKey(scope, select.value, input) === savedScopeKey);
     setInlineError(status, "");
   }
 
@@ -116,15 +117,32 @@ function createScopeEditor(hostKey) {
       return;
     }
 
-    const response = await sendRuntimeMessage({
-      type: "OPTIONS_RENAME_HOST",
-      hostKey,
-      nextHostKey: validation.key,
-    });
+    select.disabled = true;
+    input.disabled = true;
+    saveButton.disabled = true;
+    setInlineError(status, "");
 
-    if (!response || response.ok !== true) {
-      setInlineError(status, (response && response.error) || "Failed to update injection target.");
+    try {
+      const response = await sendRuntimeMessage({
+        type: "OPTIONS_RENAME_HOST",
+        hostKey: savedScopeKey,
+        nextHostKey: validation.key,
+      });
+
+      if (!response || response.ok !== true) {
+        setInlineError(status, (response && response.error) || "Failed to update injection target.");
+        return;
+      }
+
+      savedScopeKey = validation.key;
+      saveButton.classList.add("hidden");
+    } catch (error) {
+      setInlineError(status, String(error.message || error));
       return;
+    } finally {
+      select.disabled = false;
+      input.disabled = false;
+      saveButton.disabled = false;
     }
 
     await refreshModel();
