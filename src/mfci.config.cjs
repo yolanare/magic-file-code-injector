@@ -8,6 +8,7 @@ module.exports = {
     build: {
         clean: false,
         copy: [],
+        ignoreDotFiles: true,
         exportHtml: {
             enabled: true,
             mergeSameName: true,

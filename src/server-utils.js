@@ -90,6 +90,17 @@ function isPathInsideOrSame(basePath, targetPath) {
     return relativePath === '' || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath));
 }
 
+/**
+ * Check whether a path inside a root contains a dot-prefixed file or directory.
+ * @param {string} basePath - Root directory used to resolve path segments.
+ * @param {string} targetPath - Candidate path inside the root.
+ * @returns {boolean} True when one relative path segment starts with a dot.
+ */
+function hasDotPathSegment(basePath, targetPath) {
+    const relativePath = resolveRelativePath(basePath, targetPath);
+    return relativePath.split(path.sep).some((segment) => segment.startsWith('.'));
+}
+
 module.exports = {
     isNonEmptyString,
     normalizeObject,
@@ -98,4 +109,5 @@ module.exports = {
     inferReloadType,
     isPathInside,
     isPathInsideOrSame,
+    hasDotPathSegment,
 };

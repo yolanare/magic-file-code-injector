@@ -98,6 +98,7 @@ Create your project config (`mfci.config.cjs`) from this template and override o
 | --- | --- | --- | --- |
 | `build.clean` | `boolean` | `false` | Removes `rootDir/build` before build starts. |
 | `build.copy` | `Array<{ from: string, to: string }>` | `[]` | Additional recursive copy tasks executed after language builds. |
+| `build.ignoreDotFiles` | `boolean` | `true` | Ignores dot-prefixed files and directories such as `.file.html` and `.cache/`. |
 | `build.exportHtml.enabled` | `boolean` | `true` | Exports HTML wrappers next to built CSS/JS outputs (`build/css/*.html`, `build/js/*.html`, and module CSS/JS outputs under `build/modules/<module>/<type>/*.html`). |
 | `build.exportHtml.mergeSameName` | `boolean` | `true` | Merges same-name HTML files from `build/html`, `build/css`, `build/js` into `build/merge` in `html > css > js` order. |
 | `build.languages.html.enabled` | `boolean` | `true` | Enables standalone/module HTML build. |

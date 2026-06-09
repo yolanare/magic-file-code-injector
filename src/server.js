@@ -14,6 +14,7 @@ const {
     inferReloadType,
     isPathInside,
     isPathInsideOrSame,
+    hasDotPathSegment,
 } = require('./server-utils');
 
 const INTERNAL_MANIFEST_ROUTE = '/magic-file-code-injector.manifest.json';
@@ -479,6 +480,19 @@ function isBuildSourcePath(filePath, config) {
 }
 
 /**
+ * Check whether a source event belongs to a dot-prefixed file or directory.
+ * @param {string} filePath - Candidate source path.
+ * @param {any} config - Normalized server config.
+ * @returns {boolean} True when the source path contains a hidden segment.
+ */
+function isDotBuildSourcePath(filePath, config) {
+    const absolutePath = path.resolve(filePath);
+    return Object.values(config.devDirs).some(
+        (directory) => isPathInsideOrSame(directory, absolutePath) && hasDotPathSegment(directory, absolutePath)
+    );
+}
+
+/**
  * Check whether a changed build output should be sent as extension refresh signal.
  * @param {string} filePath - Build output path.
  * @param {any} config - Normalized server config.
@@ -720,6 +734,10 @@ function startDevServer(inputConfig = {}, options = {}) {
     originalRefresh = lrServer.refresh.bind(lrServer);
     lrServer.refresh = (filePath) => {
         if (isBuildSourcePath(filePath, config)) {
+            if (buildConfig.ignoreDotFiles && isDotBuildSourcePath(filePath, config)) {
+                return;
+            }
+
             // LiveReload watches source files, but the extension must receive built CSS/JS output paths.
             runBuildFromDevServer('source-change', filePath).catch(() => {});
             return;

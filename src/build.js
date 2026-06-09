@@ -5,7 +5,7 @@ const sass = require('sass');
 const esbuild = require('esbuild');
 const { formatLogLine, formatPath, supportsColor } = require('./log-format');
 const DEFAULT_TEMPLATE = require('./mfci.config.cjs');
-const { isNonEmptyString, normalizeObject, toForwardSlashes, isPathInsideOrSame } = require('./server-utils');
+const { isNonEmptyString, normalizeObject, toForwardSlashes, isPathInsideOrSame, hasDotPathSegment } = require('./server-utils');
 
 const DEFAULT_BUILD_LOG_PREFIX = '[mfci-build]';
 
@@ -117,6 +117,7 @@ function normalizeBuildConfig(inputConfig = {}, options = {}) {
         },
         clean: normalizeBoolean(buildSource.clean, buildDefaults.clean),
         copy: normalizeCopyTasks(buildSource.copy ?? buildDefaults.copy, cwd),
+        ignoreDotFiles: normalizeBoolean(buildSource.ignoreDotFiles, buildDefaults.ignoreDotFiles),
         exportHtml: {
             enabled: normalizeBoolean(buildSource.exportHtml && buildSource.exportHtml.enabled, buildDefaults.exportHtml.enabled),
             mergeSameName: normalizeBoolean(buildSource.exportHtml && buildSource.exportHtml.mergeSameName, buildDefaults.exportHtml.mergeSameName),
@@ -192,9 +193,10 @@ function logBuild(config, level, message) {
 /**
  * Recursively list files from one directory.
  * @param {string} directoryPath - Directory path.
+ * @param {boolean} ignoreDotFiles - Whether dot-prefixed files and directories are skipped.
  * @returns {Promise<string[]>} Discovered file paths.
  */
-async function walkDirectory(directoryPath) {
+async function walkDirectory(directoryPath, ignoreDotFiles = false) {
     if (!fs.existsSync(directoryPath)) {
         return [];
     }
@@ -203,9 +205,13 @@ async function walkDirectory(directoryPath) {
     const files = [];
 
     for (const entry of entries) {
+        if (ignoreDotFiles && entry.name.startsWith('.')) {
+            continue;
+        }
+
         const fullPath = path.join(directoryPath, entry.name);
         if (entry.isDirectory()) {
-            files.push(...(await walkDirectory(fullPath)));
+            files.push(...(await walkDirectory(fullPath, ignoreDotFiles)));
             continue;
         }
 
@@ -390,23 +396,25 @@ function displayPathPair(config, sourcePath, outputPath) {
 
 /**
  * Collect files matching one extension set in deterministic order.
+ * @param {any} config - Normalized build config.
  * @param {string} sourceDir - Source directory.
  * @param {Set<string>} extensions - Allowed extensions.
  * @returns {Promise<string[]>} Matching files.
  */
-async function collectCandidates(sourceDir, extensions) {
-    const files = await walkDirectory(sourceDir);
+async function collectCandidates(config, sourceDir, extensions) {
+    const files = await walkDirectory(sourceDir, config.ignoreDotFiles);
     return files.filter((filePath) => extensions.has(path.extname(filePath).toLowerCase())).sort();
 }
 
 /**
  * Resolve changed source state for one source directory and extension set.
+ * @param {any} config - Normalized build config.
  * @param {string} changedPath - Absolute changed source path.
  * @param {string} sourceDir - Source root directory.
  * @param {Set<string>} extensions - Allowed source extensions.
- * @returns {null|{path:string,extension:string,exists:boolean,isKnownExtension:boolean}} Changed source state.
+ * @returns {null|{path:string,extension:string,exists:boolean,isKnownExtension:boolean,isIgnored:boolean}} Changed source state.
  */
-function resolveChangedCandidateState(changedPath, sourceDir, extensions) {
+function resolveChangedCandidateState(config, changedPath, sourceDir, extensions) {
     if (!changedPath || !isPathInsideOrSame(sourceDir, changedPath)) {
         return null;
     }
@@ -417,17 +425,22 @@ function resolveChangedCandidateState(changedPath, sourceDir, extensions) {
         extension,
         exists: fs.existsSync(changedPath),
         isKnownExtension: extensions.has(extension),
+        isIgnored: config.ignoreDotFiles && hasDotPathSegment(sourceDir, changedPath),
     };
 }
 
 /**
  * Select build candidates from one changed source state.
  * @param {string[]} candidates - Candidates discovered from source directory.
- * @param {null|{path:string,exists:boolean,isKnownExtension:boolean}} changedState - Changed source state.
- * @param {(state:{path:string,exists:boolean,isKnownExtension:boolean})=>boolean} shouldRebuildAll - Rebuild-all selector.
+ * @param {null|{path:string,exists:boolean,isKnownExtension:boolean,isIgnored:boolean}} changedState - Changed source state.
+ * @param {(state:{path:string,exists:boolean,isKnownExtension:boolean,isIgnored:boolean})=>boolean} shouldRebuildAll - Rebuild-all selector.
  * @returns {string[]} Selected candidates.
  */
 function selectCandidatesForChangedState(candidates, changedState, shouldRebuildAll = () => false) {
+    if (changedState && changedState.isIgnored) {
+        return [];
+    }
+
     if (!changedState || !changedState.isKnownExtension) {
         return candidates;
     }
@@ -649,14 +662,14 @@ async function runStandaloneHtmlBuild(config, scope, changedOutputs) {
 
     const sourceDir = config.paths.devHtmlDir;
     const outputDir = config.paths.buildHtmlDir;
-    const changedState = resolveChangedCandidateState(config.changedSourcePath, sourceDir, config.languages.html.extensions);
+    const changedState = resolveChangedCandidateState(config, config.changedSourcePath, sourceDir, config.languages.html.extensions);
 
     if (!fs.existsSync(sourceDir)) {
         logBuild(config, 'info', `HTML source directory not found (optional, skipped): ${displayPath(config, sourceDir)}`);
         return { count: 0 };
     }
 
-    const candidates = await collectCandidates(sourceDir, config.languages.html.extensions);
+    const candidates = await collectCandidates(config, sourceDir, config.languages.html.extensions);
     const selectedCandidates = selectCandidatesForChangedState(candidates, changedState);
 
     let count = 0;
@@ -689,14 +702,14 @@ async function runStandaloneCssBuild(config, scope, changedOutputs, cssAssets) {
 
     const sourceDir = config.paths.devCssDir;
     const outputDir = config.paths.buildCssDir;
-    const changedState = resolveChangedCandidateState(config.changedSourcePath, sourceDir, config.languages.sass.extensions);
+    const changedState = resolveChangedCandidateState(config, config.changedSourcePath, sourceDir, config.languages.sass.extensions);
 
     if (!fs.existsSync(sourceDir)) {
         logBuild(config, 'info', `CSS source directory not found (optional, skipped): ${displayPath(config, sourceDir)}`);
         return { count: 0 };
     }
 
-    const candidates = (await collectCandidates(sourceDir, config.languages.sass.extensions)).filter((candidate) => {
+    const candidates = (await collectCandidates(config, sourceDir, config.languages.sass.extensions)).filter((candidate) => {
         const extension = path.extname(candidate).toLowerCase();
         if ((extension === '.scss' || extension === '.sass') && path.basename(candidate).startsWith('_')) {
             return false;
@@ -741,14 +754,14 @@ async function runStandaloneJsBuild(config, scope, changedOutputs, jsAssets) {
 
     const sourceDir = config.paths.devJsDir;
     const outputDir = config.paths.buildJsDir;
-    const changedState = resolveChangedCandidateState(config.changedSourcePath, sourceDir, config.languages.js.extensions);
+    const changedState = resolveChangedCandidateState(config, config.changedSourcePath, sourceDir, config.languages.js.extensions);
 
     if (!fs.existsSync(sourceDir)) {
         logBuild(config, 'info', `JS source directory not found (optional, skipped): ${displayPath(config, sourceDir)}`);
         return { count: 0 };
     }
 
-    const candidates = await collectCandidates(sourceDir, config.languages.js.extensions);
+    const candidates = await collectCandidates(config, sourceDir, config.languages.js.extensions);
     const selectedCandidates = selectCandidatesForChangedState(candidates, changedState);
 
     let count = 0;
@@ -892,8 +905,8 @@ async function runModulesBuild(config, scope, changedOutputs) {
         ...Array.from(config.languages.js.extensions),
     ]);
 
-    const candidates = await collectCandidates(sourceDir, allowedExtensions);
-    const changedState = resolveChangedCandidateState(config.changedSourcePath, sourceDir, allowedExtensions);
+    const candidates = await collectCandidates(config, sourceDir, allowedExtensions);
+    const changedState = resolveChangedCandidateState(config, config.changedSourcePath, sourceDir, allowedExtensions);
     const selectedCandidates = selectCandidatesForChangedState(candidates, changedState, (state) => {
         const isSassPartial = (state.extension === '.scss' || state.extension === '.sass') && path.basename(state.path).startsWith('_');
         // Module Sass partials have unknown import reach inside the module tree.
@@ -1389,7 +1402,7 @@ async function runCopyTask(config, task, changedOutputs) {
         return 0;
     }
 
-    const files = await walkDirectory(task.from);
+    const files = await walkDirectory(task.from, config.ignoreDotFiles);
     let count = 0;
 
     for (const sourceFile of files) {
