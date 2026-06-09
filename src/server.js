@@ -699,18 +699,29 @@ function startDevServer(inputConfig = {}, options = {}) {
                     buildRuntime.pendingGeneralReason = '';
                 }
 
-                const buildResult = await runBuild(inputConfig, {
-                    cwd: config.cwd,
-                    useColor: config.useColor,
-                    logger: () => {},
-                    changedSourcePath: runSourcePath,
-                });
+                let buildResult;
+                try {
+                    buildResult = await runBuild(inputConfig, {
+                        cwd: config.cwd,
+                        useColor: config.useColor,
+                        logger: () => {},
+                        changedSourcePath: runSourcePath,
+                    });
+                } catch (error) {
+                    const sourceLabel = runSourcePath ? ` (${formatServerPath(config, runSourcePath)})` : '';
+                    const message = String(error && error.message ? error.message : error);
+                    logServer(config, 'error', `Build failed${sourceLabel}: ${message}`);
+                    continue;
+                }
+
                 if (buildResult.changedOutputs.length > 0) {
                     manifestCache = null;
                 }
 
                 if (runReason === 'source-change' && runSourcePath) {
-                    logServer(config, 'success', `Build done: ${formatServerPath(config, runSourcePath)}`);
+                    const level = buildResult.changedOutputs.length > 0 ? 'success' : 'info';
+                    const suffix = buildResult.changedOutputs.length > 0 ? '' : ' (no output change)';
+                    logServer(config, level, `Build done${suffix}: ${formatServerPath(config, runSourcePath)}`);
                 } else {
                     logServer(config, 'success', `Build done (${runReason}): ${buildResult.stats.total} file(s)`);
                 }
@@ -723,9 +734,6 @@ function startDevServer(inputConfig = {}, options = {}) {
                     }
                 }
             } while (buildRuntime.pendingSourcePathCounts.size > 0 || buildRuntime.pendingGeneralReason);
-        } catch (error) {
-            const message = String(error && error.message ? error.message : error);
-            logServer(config, 'error', `Build failed: ${message}`);
         } finally {
             buildRuntime.isRunning = false;
         }
