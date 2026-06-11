@@ -808,21 +808,52 @@ function inferModuleSourceType(config, absolutePath) {
 }
 
 /**
+ * Resolve module roots from directories that contain source files directly.
+ * A shallower module root owns nested source folders below it.
+ * @param {string} sourceDir - Modules source root directory.
+ * @param {string[]} candidates - Module source candidates.
+ * @returns {string[]} Absolute module root directories.
+ */
+function resolveModuleRoots(sourceDir, candidates) {
+    const candidateDirectories = Array.from(new Set(candidates.map((filePath) => path.dirname(filePath)))).sort(
+        (left, right) => left.split(path.sep).length - right.split(path.sep).length || left.localeCompare(right)
+    );
+    const moduleRoots = [];
+
+    for (const directoryPath of candidateDirectories) {
+        if (moduleRoots.some((moduleRoot) => isPathInsideOrSame(moduleRoot, directoryPath))) {
+            continue;
+        }
+
+        if (directoryPath !== sourceDir) {
+            moduleRoots.push(directoryPath);
+        }
+    }
+
+    return moduleRoots;
+}
+
+/**
  * Resolve module metadata from one source path under `dev/modules`.
  * @param {string} sourceDir - Modules source root directory.
+ * @param {string[]} moduleRoots - Absolute module root directories.
  * @param {string} absolutePath - Absolute module source path.
- * @returns {null|{moduleName:string,moduleRelativePath:string,extension:string}} Module metadata.
+ * @returns {null|{moduleName:string,modulePath:string,moduleGroupPath:string,moduleRelativePath:string,extension:string}} Module metadata.
  */
-function resolveModuleSourceMeta(sourceDir, absolutePath) {
-    const relativePath = toForwardSlashes(path.relative(sourceDir, absolutePath));
-    const parts = relativePath.split('/').filter(Boolean);
-    if (parts.length < 2) {
+function resolveModuleSourceMeta(sourceDir, moduleRoots, absolutePath) {
+    const moduleRoot = moduleRoots.find((candidateRoot) => isPathInsideOrSame(candidateRoot, absolutePath));
+    if (!moduleRoot) {
         return null;
     }
 
+    const modulePath = toForwardSlashes(path.relative(sourceDir, moduleRoot));
+    const moduleGroupPath = toForwardSlashes(path.dirname(modulePath));
+
     return {
-        moduleName: parts[0],
-        moduleRelativePath: parts.slice(1).join('/'),
+        moduleName: path.basename(moduleRoot),
+        modulePath,
+        moduleGroupPath: moduleGroupPath === '.' ? '' : moduleGroupPath,
+        moduleRelativePath: toForwardSlashes(path.relative(moduleRoot, absolutePath)),
         extension: path.extname(absolutePath).toLowerCase(),
     };
 }
@@ -830,19 +861,13 @@ function resolveModuleSourceMeta(sourceDir, absolutePath) {
 /**
  * Resolve one module output path by source file type and module metadata.
  * @param {any} config - Normalized build config.
- * @param {string} sourceDir - Modules source root directory.
- * @param {string} absolutePath - Absolute module source path.
+ * @param {{modulePath:string,moduleRelativePath:string,extension:string}} sourceMeta - Resolved source metadata.
  * @param {"html"|"css"|"js"} sourceType - Resolved module source type.
  * @returns {string} Absolute module output file path.
  */
-function resolveModuleOutputFilePath(config, sourceDir, absolutePath, sourceType) {
-    const meta = resolveModuleSourceMeta(sourceDir, absolutePath);
-    if (!meta) {
-        return '';
-    }
-
-    const outputRelativePath = renderOutputPathBySourceType(sourceType, meta.moduleRelativePath, meta.extension);
-    return path.resolve(config.paths.buildModulesDir, meta.moduleName, sourceType, outputRelativePath);
+function resolveModuleOutputFilePath(config, sourceMeta, sourceType) {
+    const outputRelativePath = renderOutputPathBySourceType(sourceType, sourceMeta.moduleRelativePath, sourceMeta.extension);
+    return path.resolve(config.paths.buildModulesDir, sourceMeta.modulePath, sourceType, outputRelativePath);
 }
 
 /**
@@ -861,9 +886,7 @@ async function removeStaleModuleOutputs(config, expectedFiles, changedOutputs) {
     let removedCount = 0;
 
     for (const filePath of moduleFiles.sort()) {
-        const isTopLevelModuleMerge =
-            path.dirname(filePath) === config.paths.buildModulesDir && path.extname(filePath).toLowerCase() === '.html';
-        if (isTopLevelModuleMerge || expectedFiles.has(filePath)) {
+        if (expectedFiles.has(filePath)) {
             continue;
         }
 
@@ -881,22 +904,22 @@ async function removeStaleModuleOutputs(config, expectedFiles, changedOutputs) {
 }
 
 /**
- * Build module files from `dev/modules` into `build/modules/<module>/<type>/...`.
+ * Build module files while preserving optional group paths under `build/modules`.
  * @param {any} config - Normalized build config.
  * @param {any} scope - Resolved build scope.
  * @param {Set<string>} changedOutputs - Mutable set of changed output files.
- * @returns {Promise<{count:number}>} Build result.
+ * @returns {Promise<{count:number,moduleDirectories:string[]}>} Build result.
  */
 async function runModulesBuild(config, scope, changedOutputs) {
     if (!scope.modules) {
-        return { count: 0 };
+        return { count: 0, moduleDirectories: [] };
     }
 
     const sourceDir = config.paths.devModulesDir;
 
     if (!fs.existsSync(sourceDir)) {
         logBuild(config, 'info', `Modules directory not found (optional, skipped): ${displayPath(config, sourceDir)}`);
-        return { count: 0 };
+        return { count: 0, moduleDirectories: [] };
     }
 
     const allowedExtensions = new Set([
@@ -906,6 +929,7 @@ async function runModulesBuild(config, scope, changedOutputs) {
     ]);
 
     const candidates = await collectCandidates(config, sourceDir, allowedExtensions);
+    const moduleRoots = resolveModuleRoots(sourceDir, candidates);
     const changedState = resolveChangedCandidateState(config, config.changedSourcePath, sourceDir, allowedExtensions);
     const selectedCandidates = selectCandidatesForChangedState(candidates, changedState, (state) => {
         const isSassPartial = (state.extension === '.scss' || state.extension === '.sass') && path.basename(state.path).startsWith('_');
@@ -931,17 +955,22 @@ async function runModulesBuild(config, scope, changedOutputs) {
             continue;
         }
 
-        const outputFile = resolveModuleOutputFilePath(config, sourceDir, inputFile, fileType);
-        if (!outputFile) {
+        const sourceMeta = resolveModuleSourceMeta(sourceDir, moduleRoots, inputFile);
+        if (!sourceMeta) {
             continue;
         }
 
-        const sourceMeta = resolveModuleSourceMeta(sourceDir, inputFile);
-        if (sourceMeta) {
-            const moduleOutputEntry = moduleOutputsByType.get(sourceMeta.moduleName) || { html: new Set(), css: new Set(), js: new Set() };
-            moduleOutputEntry[fileType].add(outputFile);
-            moduleOutputsByType.set(sourceMeta.moduleName, moduleOutputEntry);
-        }
+        const outputFile = resolveModuleOutputFilePath(config, sourceMeta, fileType);
+        const moduleOutputEntry = moduleOutputsByType.get(sourceMeta.modulePath) || {
+            moduleName: sourceMeta.moduleName,
+            modulePath: sourceMeta.modulePath,
+            moduleGroupPath: sourceMeta.moduleGroupPath,
+            html: new Set(),
+            css: new Set(),
+            js: new Set(),
+        };
+        moduleOutputEntry[fileType].add(outputFile);
+        moduleOutputsByType.set(sourceMeta.modulePath, moduleOutputEntry);
 
         expectedModuleOutputs.add(outputFile);
 
@@ -960,17 +989,28 @@ async function runModulesBuild(config, scope, changedOutputs) {
         }
     }
 
-    for (const [moduleName, moduleOutputEntry] of moduleOutputsByType.entries()) {
+    for (const moduleOutputEntry of moduleOutputsByType.values()) {
+        const moduleDir = path.resolve(config.paths.buildModulesDir, moduleOutputEntry.modulePath);
+        const moduleMergeFile = path.resolve(
+            config.paths.buildModulesDir,
+            moduleOutputEntry.moduleGroupPath,
+            `${moduleOutputEntry.moduleName}.html`
+        );
+
+        if (config.exportHtml.enabled && config.exportHtml.mergeSameName) {
+            expectedModuleOutputs.add(moduleMergeFile);
+        }
+
         if (moduleOutputEntry.html.size > 1) {
-            expectedModuleOutputs.add(path.resolve(config.paths.buildModulesDir, moduleName, `${moduleName}.html`));
+            expectedModuleOutputs.add(path.resolve(moduleDir, `${moduleOutputEntry.moduleName}.html`));
         }
 
         if (moduleOutputEntry.css.size > 1) {
-            expectedModuleOutputs.add(path.resolve(config.paths.buildModulesDir, moduleName, `${moduleName}.css`));
+            expectedModuleOutputs.add(path.resolve(moduleDir, `${moduleOutputEntry.moduleName}.css`));
         }
 
         if (moduleOutputEntry.js.size > 1) {
-            expectedModuleOutputs.add(path.resolve(config.paths.buildModulesDir, moduleName, `${moduleName}.js`));
+            expectedModuleOutputs.add(path.resolve(moduleDir, `${moduleOutputEntry.moduleName}.js`));
         }
     }
 
@@ -980,11 +1020,13 @@ async function runModulesBuild(config, scope, changedOutputs) {
             continue;
         }
 
-        const outputFile = resolveModuleOutputFilePath(config, sourceDir, inputFile, fileType);
-        if (!outputFile) {
+        const sourceMeta = resolveModuleSourceMeta(sourceDir, moduleRoots, inputFile);
+        if (!sourceMeta) {
             logBuild(config, 'warn', `Module source ignored (must be inside one module folder): ${displayPath(config, inputFile)}`);
             continue;
         }
+
+        const outputFile = resolveModuleOutputFilePath(config, sourceMeta, fileType);
 
         if (fileType === 'html') {
             count += await buildHtmlFile(config, inputFile, outputFile, changedOutputs);
@@ -1008,7 +1050,12 @@ async function runModulesBuild(config, scope, changedOutputs) {
     count += await runAssetHtmlExport(config, moduleJsAssets, exportJsAsHtml, changedOutputs);
     count += await removeStaleModuleOutputs(config, expectedModuleOutputs, changedOutputs);
 
-    return { count };
+    return {
+        count,
+        moduleDirectories: Array.from(moduleOutputsByType.values())
+            .map((moduleOutputEntry) => path.resolve(config.paths.buildModulesDir, moduleOutputEntry.modulePath))
+            .sort(),
+    };
 }
 
 /**
@@ -1189,7 +1236,7 @@ async function writeModuleLanguageConcat(config, moduleDirPath, moduleName, type
 }
 
 /**
- * Merge one module directory into one standalone HTML output next to module folders.
+ * Merge one module directory into one standalone HTML output next to its module folder.
  * @param {any} config - Normalized build config.
  * @param {string} moduleDirPath - Absolute module directory path in `build/modules`.
  * @param {string} moduleName - Module folder name.
@@ -1236,7 +1283,7 @@ async function mergeOneModuleDirectory(config, moduleDirPath, moduleName, change
         }
     }
 
-    const moduleMergeOutputFile = path.resolve(config.paths.buildModulesDir, `${moduleName}.html`);
+    const moduleMergeOutputFile = path.resolve(path.dirname(moduleDirPath), `${moduleName}.html`);
     if (mergeableFileCount === 0) {
         const removed = await removeFileIfExists(moduleMergeOutputFile);
         if (!removed) {
@@ -1260,12 +1307,53 @@ async function mergeOneModuleDirectory(config, moduleDirPath, moduleName, change
 }
 
 /**
- * Merge all built modules into standalone HTML files in `build/modules/<module>.html`.
+ * Remove obsolete module merge files while leaving module-internal HTML outputs untouched.
+ * @param {any} config - Normalized build config.
+ * @param {string} groupDirPath - Current module group output directory.
+ * @param {Set<string>} moduleDirectories - Active module output directories.
+ * @param {Set<string>} expectedMergeFiles - Active standalone module merge files.
+ * @param {Set<string>} changedOutputs - Mutable set of changed output files.
+ * @returns {Promise<number>} Number of removed stale merge files.
+ */
+async function removeStaleModuleMergeFiles(config, groupDirPath, moduleDirectories, expectedMergeFiles, changedOutputs) {
+    const entries = await fsPromises.readdir(groupDirPath, { withFileTypes: true });
+    let changedCount = 0;
+
+    for (const entry of entries) {
+        const entryPath = path.resolve(groupDirPath, entry.name);
+
+        if (entry.isFile() && path.extname(entry.name).toLowerCase() === '.html' && !expectedMergeFiles.has(entryPath)) {
+            const removed = await removeFileIfExists(entryPath);
+            if (removed) {
+                changedOutputs.add(entryPath);
+                changedCount += 1;
+                logBuild(config, 'warn', `Module merge removed (stale): ${displayPath(config, entryPath)}`);
+            }
+            continue;
+        }
+
+        if (entry.isDirectory() && !moduleDirectories.has(entryPath)) {
+            changedCount += await removeStaleModuleMergeFiles(
+                config,
+                entryPath,
+                moduleDirectories,
+                expectedMergeFiles,
+                changedOutputs
+            );
+        }
+    }
+
+    return changedCount;
+}
+
+/**
+ * Merge all built modules into standalone HTML files next to their module folders.
  * @param {any} config - Normalized build config.
  * @param {Set<string>} changedOutputs - Mutable set of changed output files.
+ * @param {string[]} moduleDirectories - Active module output directories resolved from sources.
  * @returns {Promise<number>} Number of changed files.
  */
-async function runModuleDirectoryMerges(config, changedOutputs) {
+async function runModuleDirectoryMerges(config, changedOutputs, moduleDirectories) {
     if (!config.exportHtml.enabled || !config.exportHtml.mergeSameName) {
         return 0;
     }
@@ -1274,41 +1362,25 @@ async function runModuleDirectoryMerges(config, changedOutputs) {
         return 0;
     }
 
-    const moduleEntries = (await fsPromises.readdir(config.paths.buildModulesDir, { withFileTypes: true }))
-        .filter((entry) => entry.isDirectory())
-        .map((entry) => entry.name)
-        .sort();
-
-    const moduleNames = new Set(moduleEntries);
+    const moduleDirectorySet = new Set(moduleDirectories);
+    const expectedMergeFiles = new Set(
+        moduleDirectories.map((moduleDirPath) => path.resolve(path.dirname(moduleDirPath), `${path.basename(moduleDirPath)}.html`))
+    );
     let changedCount = 0;
-    for (const moduleName of moduleEntries) {
-        const moduleDirPath = path.resolve(config.paths.buildModulesDir, moduleName);
-        changedCount += await mergeOneModuleDirectory(config, moduleDirPath, moduleName, changedOutputs);
+    for (const moduleDirPath of moduleDirectories) {
+        changedCount += await mergeOneModuleDirectory(config, moduleDirPath, path.basename(moduleDirPath), changedOutputs);
     }
 
-    const topLevelFiles = await fsPromises.readdir(config.paths.buildModulesDir, { withFileTypes: true });
-    for (const entry of topLevelFiles) {
-        if (!entry.isFile() || path.extname(entry.name).toLowerCase() !== '.html') {
-            continue;
-        }
-
-        const moduleNameFromFile = path.basename(entry.name, '.html');
-        if (moduleNames.has(moduleNameFromFile)) {
-            continue;
-        }
-
-        const staleFilePath = path.resolve(config.paths.buildModulesDir, entry.name);
-        const removed = await removeFileIfExists(staleFilePath);
-        if (!removed) {
-            continue;
-        }
-
-        changedOutputs.add(staleFilePath);
-        changedCount += 1;
-        logBuild(config, 'warn', `Module merge removed (stale): ${displayPath(config, staleFilePath)}`);
-    }
-
-    return changedCount;
+    return (
+        changedCount +
+        (await removeStaleModuleMergeFiles(
+            config,
+            config.paths.buildModulesDir,
+            moduleDirectorySet,
+            expectedMergeFiles,
+            changedOutputs
+        ))
+    );
 }
 
 /**
@@ -1520,7 +1592,8 @@ async function runBuild(inputConfig = {}, options = {}) {
 
     const exportedHtml = await runExportHtml(config, standaloneCssAssets, standaloneJsAssets, changedOutputs);
     const mergedHtml = await runMergeSameName(config, changedOutputs);
-    const mergedModules = await runModuleDirectoryMerges(config, changedOutputs);
+    const mergedModules =
+        scope.modules ? await runModuleDirectoryMerges(config, changedOutputs, modules.moduleDirectories) : 0;
 
     const total = standaloneHtml.count + standaloneCss.count + standaloneJs.count + modules.count + copied + exportedHtml + mergedHtml + mergedModules;
 

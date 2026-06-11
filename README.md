@@ -57,15 +57,19 @@ npm run build
   - `html`: built standalone HTML
   - `css`: built standalone CSS
   - `js`: built standalone JS
-  - `modules`: built module outputs grouped by module and type (`build/modules/<module>/html`, `build/modules/<module>/css`, `build/modules/<module>/js`)
+  - `modules`: built module outputs grouped by optional group path, module and type (`build/modules/<group>/<module>/html`, `css`, `js`)
   - `merge`: merged HTML outputs when `build.exportHtml.mergeSameName` is enabled
 
-For each module `<module>` under `dev-mfci/dev/modules`, outputs are written under `dev-mfci/build/modules/<module>`:
+Module folders can be placed directly under `dev-mfci/dev/modules` or organized under any number of group folders. A module folder is identified by at least one source file directly inside it; its nested source folders remain part of that module.
+
+For each module path `<group>/<module>`, outputs are written under `dev-mfci/build/modules/<group>/<module>`:
 
 - `html/...`: built HTML files
 - `css/...`: built CSS files + exported HTML wrappers next to each CSS file
 - `js/...`: built JS files + exported HTML wrappers next to each JS file
-- `build/modules/<module>.html`: merged module HTML (kept at the `build/modules` root)
+- `build/modules/<group>/<module>.html`: merged module HTML, written next to the module folder
+
+For example, `dev/modules/group/example-name/index.scss` builds to `build/modules/group/example-name/css/index.css`, while its merged export is `build/modules/group/example-name.html`.
 
 `mfci-dev-server` defaults:
 
@@ -99,7 +103,7 @@ Create your project config (`mfci.config.cjs`) from this template and override o
 | `build.clean` | `boolean` | `false` | Removes `rootDir/build` before build starts. |
 | `build.copy` | `Array<{ from: string, to: string }>` | `[]` | Additional recursive copy tasks executed after language builds. |
 | `build.ignoreDotFiles` | `boolean` | `true` | Ignores dot-prefixed files and directories such as `.file.html` and `.cache/`. |
-| `build.exportHtml.enabled` | `boolean` | `true` | Exports HTML wrappers next to built CSS/JS outputs (`build/css/*.html`, `build/js/*.html`, and module CSS/JS outputs under `build/modules/<module>/<type>/*.html`). |
+| `build.exportHtml.enabled` | `boolean` | `true` | Exports HTML wrappers next to built CSS/JS outputs (`build/css/*.html`, `build/js/*.html`, and module CSS/JS outputs under `build/modules/<group>/<module>/<type>/*.html`). |
 | `build.exportHtml.mergeSameName` | `boolean` | `true` | Merges same-name HTML files from `build/html`, `build/css`, `build/js` into `build/merge` in `html > css > js` order. |
 | `build.languages.html.enabled` | `boolean` | `true` | Enables standalone/module HTML build. |
 | `build.languages.html.extensions` | `string[]` | `['.html']` | Source extensions accepted as HTML. |
