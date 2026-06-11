@@ -10,6 +10,7 @@ module.exports = {
         cleanEvery: false,
         copy: [],
         ignoreDotFiles: true,
+        addFilePathBanner: true,
         exportHtml: {
             enabled: true,
             mergeSameName: true,

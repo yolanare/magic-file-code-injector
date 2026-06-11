@@ -100,10 +100,11 @@ Create your project config (`mfci.config.cjs`) from this template and override o
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `build.cleanStart` | `boolean` | `false` | Removes `rootDir/build` once when `mfci-build` or `mfci-dev-server` starts. |
+| `build.cleanStart` | `boolean` | `true` | Removes `rootDir/build` once when `mfci-build` or `mfci-dev-server` starts. |
 | `build.cleanEvery` | `boolean` | `false` | Removes `rootDir/build` before every build after startup, then rebuilds all sources instead of using incremental scope. |
 | `build.copy` | `Array<{ from: string, to: string }>` | `[]` | Additional recursive copy tasks executed after language builds. |
 | `build.ignoreDotFiles` | `boolean` | `true` | Ignores dot-prefixed files and directories such as `.file.html` and `.cache/`. |
+| `build.addFilePathBanner` | `boolean` | `true` | Adds a leading source identifier comment to generated HTML, CSS and JS files. |
 | `build.exportHtml.enabled` | `boolean` | `true` | Exports HTML wrappers next to built CSS/JS outputs (`build/css/*.html`, `build/js/*.html`, and module CSS/JS outputs under `build/modules/<group>/<module>/<type>/*.html`). |
 | `build.exportHtml.mergeSameName` | `boolean` | `true` | Merges same-name HTML files from `build/html`, `build/css`, `build/js` into `build/merge` in `html > css > js` order. |
 | `build.languages.html.enabled` | `boolean` | `true` | Enables standalone/module HTML build. |
@@ -124,6 +125,18 @@ Create your project config (`mfci.config.cjs`) from this template and override o
 | `build.languages.js.settings.platform` | `string` | `'browser'` | Build platform passed to esbuild. |
 
 `cleanStart` controls the startup build and `cleanEvery` controls subsequent builds independently. Enabling both cleans at startup and before every rebuild. The `mfci-build --clean` flag enables `cleanStart` for that command only.
+
+With `build.addFilePathBanner` enabled, standalone outputs start with their language path without the extension:
+
+```css
+/* css/group/test */
+```
+
+```html
+<!-- html/same-name -->
+```
+
+Module outputs use the module path for every language file, for example `/* group/second-example */` or `<!-- example-name -->`. Exported and merged HTML keeps these comments because it reuses the generated content.
 
 ## CLI options
 

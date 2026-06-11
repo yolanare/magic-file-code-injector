@@ -119,6 +119,7 @@ function normalizeBuildConfig(inputConfig = {}, options = {}) {
         cleanEvery: normalizeBoolean(buildSource.cleanEvery, buildDefaults.cleanEvery),
         copy: normalizeCopyTasks(buildSource.copy ?? buildDefaults.copy, cwd),
         ignoreDotFiles: normalizeBoolean(buildSource.ignoreDotFiles, buildDefaults.ignoreDotFiles),
+        addFilePathBanner: normalizeBoolean(buildSource.addFilePathBanner, buildDefaults.addFilePathBanner),
         exportHtml: {
             enabled: normalizeBoolean(buildSource.exportHtml && buildSource.exportHtml.enabled, buildDefaults.exportHtml.enabled),
             mergeSameName: normalizeBoolean(buildSource.exportHtml && buildSource.exportHtml.mergeSameName, buildDefaults.exportHtml.mergeSameName),
@@ -458,15 +459,54 @@ function selectCandidatesForChangedState(candidates, changedState, shouldRebuild
 }
 
 /**
+ * Render the source identifier embedded at the beginning of standalone outputs.
+ * @param {"html"|"css"|"js"} sourceType - Standalone source type.
+ * @param {string} relativePath - Source path relative to its language directory.
+ * @returns {string} Forward-slash identifier without source extension.
+ */
+function renderStandaloneBannerLabel(sourceType, relativePath) {
+    const parsedPath = path.parse(relativePath);
+    return toForwardSlashes(path.join(sourceType, parsedPath.dir, parsedPath.name));
+}
+
+/**
+ * Render a source path comment that cannot terminate early from unusual path characters.
+ * @param {"html"|"css"|"js"} outputType - Generated output type.
+ * @param {string} bannerLabel - Source identifier without file extension.
+ * @returns {string} Type-appropriate source path comment.
+ */
+function renderFilePathBannerComment(outputType, bannerLabel) {
+    const safeBannerLabel = outputType === 'html' ? bannerLabel.replace(/-->/g, '-- >') : bannerLabel.replace(/\*\//g, '* /');
+    return outputType === 'html' ? `<!-- ${safeBannerLabel} -->` : `/* ${safeBannerLabel} */`;
+}
+
+/**
+ * Add a source path comment to one generated text output.
+ * @param {any} config - Normalized build config.
+ * @param {"html"|"css"|"js"} outputType - Generated output type.
+ * @param {string} bannerLabel - Source identifier without file extension.
+ * @param {string} content - Generated output content.
+ * @returns {string} Output content with optional leading banner.
+ */
+function addFilePathBanner(config, outputType, bannerLabel, content) {
+    if (!config.addFilePathBanner) {
+        return content;
+    }
+
+    return `${renderFilePathBannerComment(outputType, bannerLabel)}\n${content}`;
+}
+
+/**
  * Build one HTML file by direct copy.
  * @param {any} config - Normalized build config.
  * @param {string} inputFile - Source HTML file.
  * @param {string} outputFile - Output HTML file.
+ * @param {string} bannerLabel - Source identifier embedded in generated output.
  * @param {Set<string>} changedOutputs - Mutable set of changed output files.
  * @returns {Promise<number>} Number of changed output files.
  */
-async function buildHtmlFile(config, inputFile, outputFile, changedOutputs) {
-    const htmlText = await fsPromises.readFile(inputFile, 'utf8');
+async function buildHtmlFile(config, inputFile, outputFile, bannerLabel, changedOutputs) {
+    const htmlText = addFilePathBanner(config, 'html', bannerLabel, await fsPromises.readFile(inputFile, 'utf8'));
     const changed = await writeTextFileIfChanged(outputFile, htmlText);
     if (!changed) {
         return 0;
@@ -482,15 +522,21 @@ async function buildHtmlFile(config, inputFile, outputFile, changedOutputs) {
  * @param {any} config - Normalized build config.
  * @param {string} inputFile - Source CSS/Sass file.
  * @param {string} outputFile - Output CSS file.
+ * @param {string} bannerLabel - Source identifier embedded in generated output.
  * @param {Set<string>} changedOutputs - Mutable set of changed output files.
  * @returns {Promise<number>} Number of changed output files.
  */
-async function buildCssFile(config, inputFile, outputFile, changedOutputs) {
+async function buildCssFile(config, inputFile, outputFile, bannerLabel, changedOutputs) {
     const extension = path.extname(inputFile).toLowerCase();
     const isPlainCss = extension === '.css';
 
     if (isPlainCss) {
-        const cssText = stripLeadingCssCharset(await fsPromises.readFile(inputFile, 'utf8'));
+        const cssText = addFilePathBanner(
+            config,
+            'css',
+            bannerLabel,
+            stripLeadingCssCharset(await fsPromises.readFile(inputFile, 'utf8'))
+        );
         const changed = await writeTextFileIfChanged(outputFile, cssText);
         if (!changed) {
             return 0;
@@ -509,12 +555,19 @@ async function buildCssFile(config, inputFile, outputFile, changedOutputs) {
     });
 
     let changedCount = 0;
-    let cssText = stripLeadingCssCharset(compiled.css);
+    let cssText = addFilePathBanner(config, 'css', bannerLabel, stripLeadingCssCharset(compiled.css));
 
     if (config.languages.sass.settings.sourceMap && compiled.sourceMap) {
         const mapFile = `${outputFile}.map`;
         cssText += `\n/*# sourceMappingURL=${path.basename(mapFile)} */\n`;
-        const mapChanged = await writeTextFileIfChanged(mapFile, JSON.stringify(compiled.sourceMap));
+        const sourceMap = {
+            ...compiled.sourceMap,
+            mappings:
+                config.addFilePathBanner && typeof compiled.sourceMap.mappings === 'string' ?
+                    `;${compiled.sourceMap.mappings}`
+                :   compiled.sourceMap.mappings,
+        };
+        const mapChanged = await writeTextFileIfChanged(mapFile, JSON.stringify(sourceMap));
         if (mapChanged) {
             changedCount += 1;
         }
@@ -535,12 +588,13 @@ async function buildCssFile(config, inputFile, outputFile, changedOutputs) {
  * @param {any} config - Normalized build config.
  * @param {string} inputFile - Source JS/TS file.
  * @param {string} outputFile - Output JS file.
+ * @param {string} bannerLabel - Source identifier embedded in generated output.
  * @param {Set<string>} changedOutputs - Mutable set of changed output files.
  * @returns {Promise<number>} Number of changed output files.
  */
-async function buildJsFile(config, inputFile, outputFile, changedOutputs) {
+async function buildJsFile(config, inputFile, outputFile, bannerLabel, changedOutputs) {
     if (shouldCopyJsAsIs(config, inputFile)) {
-        const sourceText = await fsPromises.readFile(inputFile, 'utf8');
+        const sourceText = addFilePathBanner(config, 'js', bannerLabel, await fsPromises.readFile(inputFile, 'utf8'));
         const changed = await writeTextFileIfChanged(outputFile, sourceText);
         if (!changed) {
             return 0;
@@ -566,6 +620,7 @@ async function buildJsFile(config, inputFile, outputFile, changedOutputs) {
         legalComments: 'none',
         charset: 'utf8',
         write: false,
+        ...(config.addFilePathBanner ? { banner: { js: renderFilePathBannerComment('js', bannerLabel) } } : {}),
     });
 
     let changedCount = 0;
@@ -678,7 +733,8 @@ async function runStandaloneHtmlBuild(config, scope, changedOutputs) {
     for (const inputFile of selectedCandidates) {
         const relativePath = path.relative(sourceDir, inputFile);
         const outputFile = path.resolve(outputDir, relativePath);
-        count += await buildHtmlFile(config, inputFile, outputFile, changedOutputs);
+        const bannerLabel = renderStandaloneBannerLabel('html', relativePath);
+        count += await buildHtmlFile(config, inputFile, outputFile, bannerLabel, changedOutputs);
     }
 
     if (changedState && changedState.isKnownExtension && !changedState.exists) {
@@ -728,9 +784,10 @@ async function runStandaloneCssBuild(config, scope, changedOutputs, cssAssets) {
         const extension = path.extname(inputFile).toLowerCase();
         const outputRelativePath = renderOutputPathBySourceType('css', relativePath, extension);
         const outputFile = path.resolve(outputDir, outputRelativePath);
+        const bannerLabel = renderStandaloneBannerLabel('css', relativePath);
 
         cssAssets.add(outputFile);
-        count += await buildCssFile(config, inputFile, outputFile, changedOutputs);
+        count += await buildCssFile(config, inputFile, outputFile, bannerLabel, changedOutputs);
     }
 
     if (changedState && changedState.isKnownExtension && !changedState.exists) {
@@ -772,9 +829,10 @@ async function runStandaloneJsBuild(config, scope, changedOutputs, jsAssets) {
         const extension = path.extname(inputFile).toLowerCase();
         const outputRelativePath = renderOutputPathBySourceType('js', relativePath, extension);
         const outputFile = path.resolve(outputDir, outputRelativePath);
+        const bannerLabel = renderStandaloneBannerLabel('js', relativePath);
 
         jsAssets.add(outputFile);
-        count += await buildJsFile(config, inputFile, outputFile, changedOutputs);
+        count += await buildJsFile(config, inputFile, outputFile, bannerLabel, changedOutputs);
     }
 
     if (changedState && changedState.isKnownExtension && !changedState.exists) {
@@ -1028,9 +1086,10 @@ async function runModulesBuild(config, scope, changedOutputs) {
         }
 
         const outputFile = resolveModuleOutputFilePath(config, sourceMeta, fileType);
+        const bannerLabel = sourceMeta.modulePath;
 
         if (fileType === 'html') {
-            count += await buildHtmlFile(config, inputFile, outputFile, changedOutputs);
+            count += await buildHtmlFile(config, inputFile, outputFile, bannerLabel, changedOutputs);
             continue;
         }
 
@@ -1040,11 +1099,11 @@ async function runModulesBuild(config, scope, changedOutputs) {
                 continue;
             }
 
-            count += await buildCssFile(config, inputFile, outputFile, changedOutputs);
+            count += await buildCssFile(config, inputFile, outputFile, bannerLabel, changedOutputs);
             continue;
         }
 
-        count += await buildJsFile(config, inputFile, outputFile, changedOutputs);
+        count += await buildJsFile(config, inputFile, outputFile, bannerLabel, changedOutputs);
     }
 
     count += await runAssetHtmlExport(config, moduleCssAssets, exportCssAsHtml, changedOutputs);
