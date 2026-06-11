@@ -6,7 +6,8 @@ module.exports = {
     port: 35888,
     rootDir: 'dev-mfci',
     build: {
-        clean: false,
+        cleanStart: false,
+        cleanEvery: false,
         copy: [],
         ignoreDotFiles: true,
         exportHtml: {

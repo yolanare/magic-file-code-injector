@@ -100,7 +100,8 @@ Create your project config (`mfci.config.cjs`) from this template and override o
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `build.clean` | `boolean` | `false` | Removes `rootDir/build` before build starts. |
+| `build.cleanStart` | `boolean` | `false` | Removes `rootDir/build` once when `mfci-build` or `mfci-dev-server` starts. |
+| `build.cleanEvery` | `boolean` | `false` | Removes `rootDir/build` before every build after startup, then rebuilds all sources instead of using incremental scope. |
 | `build.copy` | `Array<{ from: string, to: string }>` | `[]` | Additional recursive copy tasks executed after language builds. |
 | `build.ignoreDotFiles` | `boolean` | `true` | Ignores dot-prefixed files and directories such as `.file.html` and `.cache/`. |
 | `build.exportHtml.enabled` | `boolean` | `true` | Exports HTML wrappers next to built CSS/JS outputs (`build/css/*.html`, `build/js/*.html`, and module CSS/JS outputs under `build/modules/<group>/<module>/<type>/*.html`). |
@@ -121,6 +122,8 @@ Create your project config (`mfci.config.cjs`) from this template and override o
 | `build.languages.js.settings.target` | `string` | `'es2020'` | JavaScript target passed to esbuild. |
 | `build.languages.js.settings.format` | `string` | `'esm'` | Output format passed to esbuild. |
 | `build.languages.js.settings.platform` | `string` | `'browser'` | Build platform passed to esbuild. |
+
+`cleanStart` controls the startup build and `cleanEvery` controls subsequent builds independently. Enabling both cleans at startup and before every rebuild. The `mfci-build --clean` flag enables `cleanStart` for that command only.
 
 ## CLI options
 

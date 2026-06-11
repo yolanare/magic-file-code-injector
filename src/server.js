@@ -706,6 +706,7 @@ function startDevServer(inputConfig = {}, options = {}) {
                         useColor: config.useColor,
                         logger: () => {},
                         changedSourcePath: runSourcePath,
+                        isStart: runReason === 'startup',
                     });
                 } catch (error) {
                     const sourceLabel = runSourcePath ? ` (${formatServerPath(config, runSourcePath)})` : '';

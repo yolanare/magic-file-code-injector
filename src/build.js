@@ -115,7 +115,8 @@ function normalizeBuildConfig(inputConfig = {}, options = {}) {
             buildModulesDir: path.resolve(buildRoot, 'modules'),
             buildMergeDir: path.resolve(buildRoot, 'merge'),
         },
-        clean: normalizeBoolean(buildSource.clean, buildDefaults.clean),
+        cleanStart: normalizeBoolean(buildSource.cleanStart, buildDefaults.cleanStart),
+        cleanEvery: normalizeBoolean(buildSource.cleanEvery, buildDefaults.cleanEvery),
         copy: normalizeCopyTasks(buildSource.copy ?? buildDefaults.copy, cwd),
         ignoreDotFiles: normalizeBoolean(buildSource.ignoreDotFiles, buildDefaults.ignoreDotFiles),
         exportHtml: {
@@ -1502,12 +1503,13 @@ async function runCopyTask(config, task, changedOutputs) {
 }
 
 /**
- * Clean build output root.
+ * Clean build output root when requested for this execution.
  * @param {any} config - Normalized build config.
+ * @param {boolean} shouldClean - Whether this execution must start from an empty build directory.
  * @returns {Promise<void>} Completes after clean pass.
  */
-async function runClean(config) {
-    if (!config.clean) {
+async function runClean(config, shouldClean) {
+    if (!shouldClean) {
         return;
     }
 
@@ -1573,12 +1575,17 @@ async function exportOutputFileAsHtml(normalizedConfig, outputFilePath) {
  */
 async function runBuild(inputConfig = {}, options = {}) {
     const config = normalizeBuildConfig(inputConfig, options);
+    const isStart = options.isStart === true;
+    const shouldClean = isStart ? config.cleanStart : config.cleanEvery;
+    if (shouldClean) {
+        config.changedSourcePath = '';
+    }
     const scope = resolveBuildScope(config);
     const changedOutputs = new Set();
     const standaloneCssAssets = new Set();
     const standaloneJsAssets = new Set();
 
-    await runClean(config);
+    await runClean(config, shouldClean);
 
     const standaloneHtml = await runStandaloneHtmlBuild(config, scope, changedOutputs);
     const standaloneCss = await runStandaloneCssBuild(config, scope, changedOutputs, standaloneCssAssets);

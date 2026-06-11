@@ -14,7 +14,7 @@ Usage:
 
 Options:
   --config <path>   Optional config file path (default lookup: mfci.config.cjs)
-  --clean           Clean output directories before build
+  --clean           Clean output directories before this build
   --help            Show this help
 `);
 }
@@ -82,12 +82,12 @@ async function runBuildCli(argv = process.argv.slice(2), runtimeOptions = {}) {
     const runtimeConfig = loadRuntimeConfig({ cwd, configPath: parsed.configPath });
     const buildConfig = resolveBuildConfig(runtimeConfig);
 
-    // `--clean` is an explicit runtime override for local one-off builds.
+    // `--clean` is an explicit startup-clean override for this one-off command.
     if (parsed.clean) {
-        buildConfig.build.clean = true;
+        buildConfig.build.cleanStart = true;
     }
 
-    return runBuild(buildConfig, { cwd });
+    return runBuild(buildConfig, { cwd, isStart: true });
 }
 
 module.exports = {
