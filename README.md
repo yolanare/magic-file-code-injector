@@ -148,6 +148,19 @@ mfci-build --config mfci.config.cjs
 mfci-build --config mfci.config.cjs --clean
 ```
 
+Build browser extension ZIP packages:
+
+```bash
+npm run build:extension
+```
+
+This writes:
+
+- `extension/dist/chrome/magic-file-code-injector-chrome.zip`
+- `extension/dist/firefox/magic-file-code-injector-firefox.zip`
+
+Each ZIP contains `manifest.json` at the archive root. The working unpacked extension keeps the Chrome manifest after packaging.
+
 ## Extension
 
 Load unpacked from:
