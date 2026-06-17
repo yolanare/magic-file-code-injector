@@ -7,6 +7,7 @@ const TARGETS = ['chrome', 'firefox'];
 const EXTENSION_DIR = path.resolve(__dirname, '..', 'extension', 'magic-file-code-injector');
 const DIST_DIR = path.resolve(__dirname, '..', 'extension', 'dist');
 const PACKAGE_NAME = 'magic-file-code-injector';
+const ACTIVE_MANIFEST_PATH = path.resolve(EXTENSION_DIR, 'manifest.json');
 
 const CRC_TABLE = new Uint32Array(256);
 for (let index = 0; index < CRC_TABLE.length; index += 1) {
@@ -198,6 +199,12 @@ async function buildPackage(target, sourceFiles) {
  */
 async function main() {
     const sourceFiles = await collectFiles(EXTENSION_DIR);
+    const originalManifest = await fsPromises.readFile(ACTIVE_MANIFEST_PATH).catch((error) => {
+        if (error.code === 'ENOENT') {
+            return null;
+        }
+        throw error;
+    });
 
     try {
         for (const target of TARGETS) {
@@ -205,8 +212,13 @@ async function main() {
             console.log(`[mfci] Built ${target} extension package: ${path.relative(process.cwd(), zipPath)}`);
         }
     } finally {
-        await fsPromises.copyFile(path.resolve(EXTENSION_DIR, 'manifest.chrome.json'), path.resolve(EXTENSION_DIR, 'manifest.json'));
-        console.log('[mfci] Selected chrome extension manifest.');
+        if (originalManifest) {
+            await fsPromises.writeFile(ACTIVE_MANIFEST_PATH, originalManifest);
+            console.log('[mfci] Restored original extension manifest.');
+        } else {
+            await fsPromises.rm(ACTIVE_MANIFEST_PATH, { force: true });
+            console.log('[mfci] Removed generated extension manifest; none existed before packaging.');
+        }
     }
 }
 
