@@ -9,8 +9,9 @@ if (!TARGETS.has(target)) {
     process.exit(1);
 }
 
-const extensionDir = path.resolve(__dirname, '..', 'extension', 'magic-file-code-injector');
-const sourceFile = path.join(extensionDir, `manifest.${target}.json`);
+const extensionRootDir = path.resolve(__dirname, '..', 'extension');
+const extensionDir = path.resolve(extensionRootDir, 'magic-file-code-injector');
+const sourceFile = path.join(extensionRootDir, `manifest.${target}.json`);
 const destinationFile = path.join(extensionDir, 'manifest.json');
 
 fs.copyFileSync(sourceFile, destinationFile);

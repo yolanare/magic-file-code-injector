@@ -12,6 +12,8 @@
         "bin",
         "scripts",
         "src",
+        "extension/manifest.chrome.json",
+        "extension/manifest.firefox.json",
         "extension/magic-file-code-injector",
         "examples",
         "README.md"

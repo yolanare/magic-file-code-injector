@@ -159,7 +159,7 @@ This writes:
 - `extension/dist/chrome/magic-file-code-injector-chrome.zip`
 - `extension/dist/firefox/magic-file-code-injector-firefox.zip`
 
-Each ZIP contains `manifest.json` at the archive root. The working unpacked extension keeps the Chrome manifest after packaging.
+Each ZIP contains `manifest.json` at the archive root. Browser-specific manifest templates live in `extension/`, outside the unpacked extension folder. The working unpacked extension manifest is restored to its original content after packaging.
 
 ## Extension
 

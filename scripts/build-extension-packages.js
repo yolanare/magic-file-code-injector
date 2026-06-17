@@ -4,8 +4,9 @@ const path = require('node:path');
 const zlib = require('node:zlib');
 
 const TARGETS = ['chrome', 'firefox'];
+const EXTENSION_ROOT_DIR = path.resolve(__dirname, '..', 'extension');
 const EXTENSION_DIR = path.resolve(__dirname, '..', 'extension', 'magic-file-code-injector');
-const DIST_DIR = path.resolve(__dirname, '..', 'extension', 'dist');
+const DIST_DIR = path.resolve(EXTENSION_ROOT_DIR, 'dist');
 const PACKAGE_NAME = 'magic-file-code-injector';
 const ACTIVE_MANIFEST_PATH = path.resolve(EXTENSION_DIR, 'manifest.json');
 
@@ -53,9 +54,7 @@ function shouldPackageFile(relativePath) {
     return (
         !relativePath.startsWith('dist/') &&
         !relativePath.startsWith('.') &&
-        relativePath !== 'manifest.json' &&
-        relativePath !== 'manifest.chrome.json' &&
-        relativePath !== 'manifest.firefox.json'
+        relativePath !== 'manifest.json'
     );
 }
 
@@ -159,7 +158,7 @@ function createZipBuffer(entries) {
  */
 async function buildPackage(target, sourceFiles) {
     const targetDir = path.resolve(DIST_DIR, target);
-    const manifestPath = path.resolve(EXTENSION_DIR, `manifest.${target}.json`);
+    const manifestPath = path.resolve(EXTENSION_ROOT_DIR, `manifest.${target}.json`);
     const zipPath = path.resolve(targetDir, `${PACKAGE_NAME}-${target}.zip`);
     const manifestStat = await fsPromises.stat(manifestPath);
 
@@ -187,7 +186,6 @@ async function buildPackage(target, sourceFiles) {
 
     entries.sort((left, right) => left.name.localeCompare(right.name));
 
-    await fsPromises.rm(targetDir, { recursive: true, force: true });
     await fsPromises.mkdir(targetDir, { recursive: true });
     await fsPromises.writeFile(zipPath, createZipBuffer(entries));
     return zipPath;
@@ -207,6 +205,7 @@ async function main() {
     });
 
     try {
+        await fsPromises.rm(DIST_DIR, { recursive: true, force: true });
         for (const target of TARGETS) {
             const zipPath = await buildPackage(target, sourceFiles);
             console.log(`[mfci] Built ${target} extension package: ${path.relative(process.cwd(), zipPath)}`);
